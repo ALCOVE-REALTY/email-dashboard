@@ -93,6 +93,17 @@ async function main() {
     whatsapp.getConnectionStatus = origGetConnectionStatus;
     return result.ok === false && result.error === 'simulated network failure';
   });
+  await checkAsync('LIVE INCIDENT (2026-11-23), direct instruction - with gateway=new, checkGateway is a true no-op (ok:true, never calls the gateway at all) - it used to silently always report ok:true here too, but by ACCIDENT (checking object fields on a bare string the facade returns for the new gateway, never actually detecting a real disconnect) - checkGatewayV1Session is the real check for this case now', async () => {
+    const savedGateway = process.env.WHATSAPP_GATEWAY;
+    process.env.WHATSAPP_GATEWAY = 'new';
+    let called = false;
+    whatsapp.getConnectionStatus = async () => { called = true; return { connected: false, status: 'disconnected' }; };
+    const monitor = freshMonitor();
+    const result = await monitor.checkGateway();
+    whatsapp.getConnectionStatus = origGetConnectionStatus;
+    if (savedGateway === undefined) delete process.env.WHATSAPP_GATEWAY; else process.env.WHATSAPP_GATEWAY = savedGateway;
+    return result.ok === true && called === false;
+  });
 
   console.log('='.repeat(70));
   console.log('checkReplyPipeline - "an incoming message 15+ min old with no reply since" (the exact send-queue-hang shape already fixed once)');

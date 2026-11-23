@@ -3279,6 +3279,42 @@ async function checkAsyncRealModel(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11-23), direct instruction - every reconnect hint must point at the gateway that is actually active, never the retired one');
+  console.log('='.repeat(70));
+  check('reconnectHintText: with gateway=old (default), points to tools.alcoverealty.in', /tools\.alcoverealty\.in/.test(whatsappAssistant.reconnectHintText('english')) && !/togetherwecan/.test(whatsappAssistant.reconnectHintText('english')));
+  await checkAsync('reconnectHintText: with gateway=new, points to togetherwecan.alcoverealty.in, NEVER tools.alcoverealty.in - in all 3 languages', async () => {
+    const saved = process.env.WHATSAPP_GATEWAY;
+    process.env.WHATSAPP_GATEWAY = 'new';
+    try {
+      return ['english', 'banglish', 'hinglish'].every((lang) => {
+        const t = whatsappAssistant.reconnectHintText(lang);
+        return /togetherwecan\.alcoverealty\.in/.test(t) && !/tools\.alcoverealty\.in/.test(t);
+      });
+    } finally {
+      if (saved === undefined) delete process.env.WHATSAPP_GATEWAY; else process.env.WHATSAPP_GATEWAY = saved;
+    }
+  });
+  await checkAsync('a confirmed disconnect with gateway=new posts an owner notification pointing to togetherwecan.alcoverealty.in (never tools.alcoverealty.in) and names the real gateway status', async () => {
+    const savedGateway = process.env.WHATSAPP_GATEWAY;
+    process.env.WHATSAPP_GATEWAY = 'new';
+    const facade = require('../src/whatsappGatewayFacade');
+    const origGetConnectionStatus = facade.getConnectionStatus;
+    facade.getConnectionStatus = async () => 'disconnected';
+    await resetGatewayTestState();
+    try {
+      for (let i = 0; i < whatsappAssistant.GATEWAY_CONFIRM_THRESHOLD; i++) await whatsappAssistant.checkGatewayConnection();
+      const notices = await whatsappAssistant.listOwnerNotifications();
+      const match = notices.find((n) => /WhatsApp disconnected since/.test(n.text));
+      return Boolean(match) && /togetherwecan\.alcoverealty\.in/.test(match.text) && !/tools\.alcoverealty\.in/.test(match.text) && /status: disconnected/.test(match.text);
+    } finally {
+      facade.getConnectionStatus = origGetConnectionStatus;
+      if (savedGateway === undefined) delete process.env.WHATSAPP_GATEWAY; else process.env.WHATSAPP_GATEWAY = savedGateway;
+      await resetGatewayTestState();
+      await whatsappAssistant.clearOwnerNotifications().catch(() => {});
+    }
+  });
+
+  console.log('='.repeat(70));
   console.log('URGENT LIVE INCIDENT FIX: catch-up after a connection/process gap - combines a sender\'s backlog into one reply, skips a manually-answered sender, flags >30min-old messages as needs-you, apologises for a short (5-30min) delay, never double-processes, and - the live bug - NEVER reaches back further than a REAL recorded gap window, regardless of what wa-last-seen says');
   console.log('='.repeat(70));
   const CATCHUP_MANUAL = '910000000890';

@@ -184,7 +184,23 @@ async function checkAiFallbackStreak() {
   }
 }
 
+// LIVE INCIDENT (2026-11-23), direct instruction - "switch every old-
+// gateway status check to the new gateway's status when gateway=new."
+// Confirmed bug: whatsappGatewayFacade.getConnectionStatus() returns a
+// bare STRING ('connected'/'disconnected') for the new gateway (by
+// design - see its own comment), but this check was written for the OLD
+// gateway's own object shape and reads .connected/.status/.state off of
+// it - all undefined on a string, so explicitlyNotConnected was ALWAYS
+// false here for the new gateway, regardless of its real state (a silent
+// false-negative - this check could never actually alarm on a real new-
+// gateway disconnect). checkGatewayV1Session() below already is the
+// correct, dedicated new-gateway check (reads the real object fields
+// from gatewayV1.getNumberStatus()/getNumberHealth() directly, no lossy
+// facade translation) - this one is now the OLD-gateway-only check,
+// skipped entirely otherwise, exactly like every other new-gateway-aware
+// check in this file.
 async function checkGateway() {
+  if (gatewayModeV1.isNewGatewayEnabled()) return { ok: true, note: 'old gateway not enabled - see checkGatewayV1Session instead' };
   try {
     const status = await withTimeout(whatsappSend.getConnectionStatus(), HEALTH_CHECK_TIMEOUT_MS);
     // Never assume one exact field name - this gateway's real response

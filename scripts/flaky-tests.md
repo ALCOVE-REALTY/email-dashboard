@@ -187,7 +187,7 @@ Failed checks:
 ```
 
 ## check-whatsapp-engine.js
-Flaked on 2026-11-23T10:40:38.425Z - failed once, passed on a lone solo retry.
+Flaked on 2026-11-23T11:19:34.734Z - failed once, passed on a lone solo retry.
 ```
 [ok] LIVE INCIDENT (2026-11), direct instruction, point 3 - a genuinely new/unrelated message arriving during the "awaiting_manager_informed" step (the live-cited "Ami kal 2nd half a asbo na") used to always get the dead-end HR_FLOW_CONTEXT_CLARIFY line and never create its own card; this step now shares the same handleUnclearFlowReply/handleUnresolvedPersonReference fallthrough its sibling step (awaiting_approval_obtained) already had - returns null (never cleared, falls through to start its own new flow) instead of swallowing the message
 [ok] cleanup (point 3 test)

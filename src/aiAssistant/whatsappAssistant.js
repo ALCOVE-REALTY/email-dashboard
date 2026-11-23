@@ -217,6 +217,29 @@ const GATEWAY_CONFIRM_THRESHOLD = 3; // consecutive REAL "not connected" checks 
 const GATEWAY_CHECK_ERROR_BACKOFF_BASE_MS = 10 * 1000;
 const GATEWAY_CHECK_ERROR_BACKOFF_MAX_MS = 5 * 60 * 1000;
 const GATEWAY_HISTORY_MAX = 500;
+// LIVE INCIDENT (2026-11-23), direct instruction - every reconnect/re-
+// link hint used to hardcode the OLD gateway's own dashboard regardless
+// of which gateway is actually active. The new gateway has no QR-scan
+// concept at all (it's an API key-based integration, not a linked phone
+// session the way the old gateway's own WhatsApp Web-style pairing was) -
+// a re-link there means visiting the new gateway's own dashboard, never
+// tools.alcoverealty.in.
+function reconnectHintText(lang) {
+  if (gatewayModeV1.isNewGatewayEnabled()) {
+    const T = {
+      banglish: 'togetherwecan.alcoverealty.in e giye number ta abar check/re-link korun.',
+      hinglish: 'togetherwecan.alcoverealty.in pe jaakar number ko phir se check/re-link karein.',
+      english: 'reconnect at togetherwecan.alcoverealty.in.'
+    };
+    return T[lang] || T.english;
+  }
+  const T = {
+    banglish: 'tools.alcoverealty.in e giye QR abar scan korun.',
+    hinglish: 'tools.alcoverealty.in pe jaake QR dobara scan karein.',
+    english: 'reconnect at tools.alcoverealty.in.'
+  };
+  return T[lang] || T.english;
+}
 const SCHEDULER_HEARTBEAT_KEY = 'wa-scheduler-heartbeat';
 const SCHEDULER_LAST_ERROR_KEY = 'wa-scheduler-last-error';
 
@@ -693,7 +716,7 @@ async function listSystemNotices() {
   }
   if (!gw.isConnected) {
     result.unshift({
-      text: '⚠️ WhatsApp disconnected since ' + gw.disconnectedSinceLabel + ' — open tools.alcoverealty.in → WhatsApp Dashboard and scan the QR again.',
+      text: '⚠️ WhatsApp disconnected since ' + gw.disconnectedSinceLabel + ' — ' + reconnectHintText('english'),
       ts: Date.now()
     });
   }
@@ -11160,7 +11183,7 @@ async function buildDailySummary() {
 
   const lines = ['SUBH daily summary (' + date + '):'];
   const gw = await gatewayStatusSummary();
-  if (!gw.isConnected) lines.push('⚠️ WhatsApp has been disconnected since ' + gw.disconnectedSinceLabel + ' - reconnect at tools.alcoverealty.in.');
+  if (!gw.isConnected) lines.push('⚠️ WhatsApp has been disconnected since ' + gw.disconnectedSinceLabel + ' - ' + reconnectHintText('english'));
   lines.push('Auto-replies sent yesterday: ' + sentYesterday.length +
     (Object.keys(byCase).length ? ' (' + Object.entries(byCase).map(([c, n]) => c + ': ' + n).join(', ') + ')' : ''));
   const uniqueFollowups = uniqueBySenderPhone(followups, 'chatId');
@@ -11308,7 +11331,7 @@ async function checkGatewayConnection() {
     if (nextCount >= GATEWAY_CONFIRM_THRESHOLD && !alreadyConfirmedDisconnected) {
       const since = Date.now();
       await postOwnerNotification('⚠️ WhatsApp disconnected since ' + formatIstDateTime(since) +
-        ' — open tools.alcoverealty.in → WhatsApp Dashboard and scan the QR again.');
+        ' — ' + reconnectHintText('english') + ' status: ' + liveStatus + '.');
       await recordGatewayHistoryEvent('real_disconnect', 'status: ' + liveStatus);
       if (redis) { try { await redis.set(GATEWAY_STATUS_KEY, liveStatus); await redis.set(GATEWAY_DISCONNECTED_SINCE_KEY, String(since)); } catch (err) { /* best effort */ } }
     }
@@ -11379,7 +11402,7 @@ async function buildAutoReplyStatusReply() {
     : (onlyPhone ? 'real send only to ' + onlyPhone : 'real send to everyone');
   const gw = await gatewayStatusSummary();
   const gwNote = gw.isConnected ? '' :
-    ' ⚠️ WhatsApp has been disconnected since ' + gw.disconnectedSinceLabel + ' - reconnect at tools.alcoverealty.in.';
+    ' ⚠️ WhatsApp has been disconnected since ' + gw.disconnectedSinceLabel + ' - ' + reconnectHintText('english');
   return 'Auto reply: ' + (enabled ? 'ON' : 'OFF') + ' — ' + sendState + '.' + gwNote;
 }
 // Written once per tick by whatsappPollScheduler.js, independent of
@@ -11669,7 +11692,7 @@ const INBOX_TEXT = {
       realOnly: (phone) => 'Sudhu ' + phone + '-ke real reply pathano hocche, baki sobar jonno draft mode e ache.',
       realAll: 'Sobar-ke real reply pathano hocche.'
     },
-    gatewayWarning: (since) => '⚠️ WhatsApp ' + since + ' theke disconnected - notun message na-o asheche thakte pare. tools.alcoverealty.in e giye QR abar scan korun.',
+    gatewayWarning: (since) => '⚠️ WhatsApp ' + since + ' theke disconnected - notun message na-o asheche thakte pare. ' + reconnectHintText('banglish'),
     docsLine: (list) => 'Document peyechi kintu "done" mark kori ni: ' + list + '.',
     approvalsLine: (list) => 'Apnar approval-er jonno pending HR data request: ' + list + '.'
   },
@@ -11694,7 +11717,7 @@ const INBOX_TEXT = {
       realOnly: (phone) => 'Sirf ' + phone + ' ko real reply ja raha hai; baki sabke liye draft mode hai.',
       realAll: 'Sabko real reply bheja ja raha hai.'
     },
-    gatewayWarning: (since) => '⚠️ WhatsApp ' + since + ' se disconnected hai - naye message nahi aa rahe honge. tools.alcoverealty.in pe jaake QR dobara scan karein.',
+    gatewayWarning: (since) => '⚠️ WhatsApp ' + since + ' se disconnected hai - naye message nahi aa rahe honge. ' + reconnectHintText('hinglish'),
     docsLine: (list) => 'Document mil gaya hai lekin "done" mark nahi kiya: ' + list + '.',
     approvalsLine: (list) => 'Aapke approval ka wait kar rahe HR data request: ' + list + '.'
   },
@@ -11719,7 +11742,7 @@ const INBOX_TEXT = {
       realOnly: (phone) => 'Only ' + phone + ' gets a real reply; everyone else stays in draft mode.',
       realAll: 'Replies are being sent for real to everyone.'
     },
-    gatewayWarning: (since) => '⚠️ WhatsApp has been disconnected since ' + since + ' - new messages may not be arriving at all. Reconnect at tools.alcoverealty.in.',
+    gatewayWarning: (since) => '⚠️ WhatsApp has been disconnected since ' + since + ' - new messages may not be arriving at all. ' + reconnectHintText('english').replace(/^reconnect/, 'Reconnect'),
     docsLine: (list) => 'Document(s) received but not yet marked done: ' + list + '.',
     approvalsLine: (list) => 'HR data requests waiting for your approval: ' + list + '.'
   }
@@ -17304,6 +17327,7 @@ module.exports = {
   sendHrConfirmationMessageToManagerCombined,
   resendPendingHrNoteFlowNudge,
   checkGatewayConnection,
+  reconnectHintText,
   gatewayStatusSummary,
   buildAutoReplyStatusReply,
   recordSchedulerHeartbeat,
