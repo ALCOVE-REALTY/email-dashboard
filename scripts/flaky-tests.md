@@ -229,3 +229,47 @@ Skipped 157 real-model tests (run with RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TE
 Real API calls: 0 · cost $0.0000
 ======================================================================
 ```
+
+## check-whatsapp-poll-scheduler.js
+Flaked on 2026-11-24T10:34:59.443Z - failed once, passed on a lone solo retry.
+```
+[ok] the backgrounded job still records a normal heartbeat once it finishes
+[ok] a second firing of the SAME job while the first is still in flight is skipped outright - never double-started
+[ok] once the first run finishes, its own onResult still fires exactly once
+[ok] after the in-flight run finishes, the same job name can run again normally (never permanently locked out)
+[ok] recordProcessStart returns the incremented today-count
+[ok] getProcessStartInfo reflects the same start just recorded (commit id, same count)
+[ok] a shutdown reason recorded before this start surfaces as previousShutdownReason
+[ok] restarts-today keeps incrementing across multiple starts in the same IST day
+[ok] a later start with no NEW shutdown reason recorded shows previousShutdownReason: null - the earlier one was consumed, never repeated
+[ok] recordProcessStart surfaces the last activity breadcrumb recorded before an uncatchable death, with a real elapsed time
+[ok] a later start with no NEW breadcrumb since the last start still re-reports the SAME last-known breadcrumb (never silently disappears) - acceptable: a stale breadcrumb is still better evidence than none, and a real incident is diagnosed from the FIRST start after it, not a much later one
+======================================================================
+CRASH LOOP (2026-11-23) fix - richer shutdown evidence + unhandledRejection no longer kills the process
+======================================================================
+[ok] installProcessExitDiagnostics actually attached a NEW unhandledRejection listener
+[ok] an unhandled rejection does NOT call process.exit - the live reply pipeline must keep running
+[ok] the rejection is still recorded as non-fatal crash evidence, tagged kind:rejection, with uptime/memory captured
+[ok] an uncaughtException still exits the process (unchanged - continuing after one risks acting on corrupted state)
+[ok] the exception is recorded with its own stack captured, tagged kind:exception
+[ok] a SIGTERM still exits cleanly (code 0, unchanged)
+[ok] a SIGTERM is recorded with kind:signal and NO stack - the card's own cue that this was not an application error, likely a host-initiated stop
+[ok] listRecentShutdowns is capped (never grows unbounded) - at most 5 entries after many more than 5 were recorded
+======================================================================
+HARDENING (2026-11-24, direct instruction) - single-instance KV lease (point 4) + graceful shutdown draining (point 3)
+======================================================================
+[ok] with no existing lease, a fresh instance acquires it and its real tick work (pollOnce) proceeds normally
+[ok] the lease key in Redis now holds a real instance id (not empty/null) after acquisition
+[ok] LIVE CONCERN (direct instruction, point 4) - while ANOTHER instance holds the lease, this one never calls pollOnce (stays in standby) - protects against a duplicate app instance double-processing messages
+[ok] the OTHER instance's lease is left completely untouched (never stolen/overwritten) by the standby instance
+[ok] setup: this instance holds the lease and its tick is running before shutdown is simulated
+[ok] setup: the lease key holds THIS instance's own id before shutdown
+[ok] HARDENING, point 3 (graceful shutdown) - the drain hook releases this instance's own lease immediately on SIGTERM, rather than waiting out its 30s TTL, so a replacement process can take over right away
+[ok] after the drain hook runs, this instance never schedules/accepts further tick work (shuttingDown stops the recursive chain)
+======================================================================
+46/48 passed
+Failed checks:
+ - pollOnce() was actually called (the tick ran) -- calls: 0
+ - pollEvents() (new-gateway backup polling) is actually called by the scheduler's fast tick - was NEVER wired in before this fix -- calls: 0
+======================================================================
+```

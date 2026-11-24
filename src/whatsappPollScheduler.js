@@ -7,6 +7,7 @@
 // so running the app locally or in a fresh environment never starts
 // reading real WhatsApp messages by accident.
 const { execSync } = require('child_process');
+const { Redis } = require('@upstash/redis');
 const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
 const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
@@ -30,6 +31,62 @@ function pollIntervalMs() {
   const configured = Number(process.env.WHATSAPP_POLL_INTERVAL_SECONDS);
   const seconds = configured > 0 ? configured : DEFAULT_POLL_INTERVAL_SECONDS;
   return seconds * 1000;
+}
+
+// HARDENING (2026-11-24), direct instruction, point 4 (single active
+// instance) - a KV lease so only one real process ever runs the poller/
+// send-flush/maintenance/health-check work against the same data,
+// protecting against an accidental second copy (a lingering old deploy, a
+// local dev server pointed at production .env, a redeploy overlap window)
+// double-processing the same messages/reports. A lightweight, PRACTICAL
+// lease (NX-acquire + TTL, renewed well before expiry) - not a textbook-
+// perfect distributed lock (this REST client has no Lua scripting to make
+// "check-then-renew" fully atomic), but more than sufficient for this
+// failure mode: the narrow get-then-set race on renewal only matters if a
+// process stalls for longer than the TTL itself between ticks, which is
+// itself already a sign something is badly wrong.
+let leaseRedisClient;
+let leaseRedisClientChecked = false;
+function getLeaseRedisClient() {
+  if (leaseRedisClientChecked) return leaseRedisClient;
+  leaseRedisClientChecked = true;
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || null;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || null;
+  leaseRedisClient = url && token ? new Redis({ url, token }) : null;
+  return leaseRedisClient;
+}
+const SCHEDULER_LEASE_KEY = 'wa-scheduler-lease';
+const SCHEDULER_LEASE_TTL_SECONDS = 30;
+const SCHEDULER_LEASE_RENEW_MS = 10 * 1000; // well under the TTL - several retries before it could ever expire out from under an alive, healthy process
+const SCHEDULER_INSTANCE_ID = process.pid + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+async function tryAcquireOrRenewSchedulerLease() {
+  const redis = getLeaseRedisClient();
+  // No KV configured at all - fails OPEN (same posture as every other
+  // Redis-health check in this app): this protection simply doesn't apply
+  // without a shared store to coordinate through, and that's a config
+  // problem for someone else to fix, not a reason to stop a genuinely
+  // single, healthy process from working.
+  if (!redis) return true;
+  try {
+    const acquired = await redis.set(SCHEDULER_LEASE_KEY, SCHEDULER_INSTANCE_ID, { nx: true, ex: SCHEDULER_LEASE_TTL_SECONDS });
+    if (acquired) return true;
+    const current = await redis.get(SCHEDULER_LEASE_KEY);
+    if (current === SCHEDULER_INSTANCE_ID) {
+      await redis.set(SCHEDULER_LEASE_KEY, SCHEDULER_INSTANCE_ID, { ex: SCHEDULER_LEASE_TTL_SECONDS });
+      return true;
+    }
+    return false;
+  } catch (err) {
+    return true; // a Redis hiccup checking the lease must never itself stop a healthy process from working
+  }
+}
+async function releaseSchedulerLeaseIfHeld() {
+  const redis = getLeaseRedisClient();
+  if (!redis) return;
+  try {
+    const current = await redis.get(SCHEDULER_LEASE_KEY);
+    if (current === SCHEDULER_INSTANCE_ID) await redis.del(SCHEDULER_LEASE_KEY);
+  } catch (err) { /* best effort - the TTL alone still protects correctness even if this release fails */ }
 }
 
 // Best-effort, computed once at startup (not per tick - this would mean
@@ -353,10 +410,39 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   // keeps it true even if the scheduling pattern here ever changes.
   let polling = false;
 
+  // HARDENING (2026-11-24), point 4 - pessimistic until the FIRST real
+  // acquisition attempt resolves (a Redis round-trip, well under this
+  // tick's own 5s-default interval) - better to skip a tick or two at
+  // startup than to optimistically let two processes both work before
+  // either has actually confirmed it holds the lease.
+  let leaseHeld = false;
+  let shuttingDown = false;
+  async function renewSchedulerLease() {
+    leaseHeld = await tryAcquireOrRenewSchedulerLease();
+  }
+  // Kicked off immediately, but explicitly AWAITED by tick #1 only (below)
+  // rather than left as a bare race against the timer - guarantees the
+  // very FIRST tick's leaseHeld read can never lose a race against this
+  // same initial check under heavy system load (a bare boolean read here
+  // would otherwise occasionally see the still-default `false` before this
+  // resolves, even though the real acquisition itself is near-instant).
+  // Every tick after #1 just reads the by-then-settled, periodically
+  // refreshed flag - no further await needed anywhere else.
+  const initialLeaseCheck = renewSchedulerLease().catch(() => {});
+  const leaseRenewInterval = setIntervalFn(() => { if (!shuttingDown) renewSchedulerLease().catch(() => {}); }, SCHEDULER_LEASE_RENEW_MS);
+
   const tick = async () => {
+    if (shuttingDown) return;
     if (polling) { setTimer(tick, pollIntervalMs()); return; }
     polling = true;
     tickCount++;
+    if (tickCount === 1) await initialLeaseCheck;
+    if (!leaseHeld) {
+      polling = false;
+      if (tickCount % HEARTBEAT_LOG_EVERY_N_TICKS === 0) log.log('[whatsapp-assistant] standby - another instance holds the scheduler lease (tick ' + tickCount + ')');
+      if (!shuttingDown) setTimer(tick, pollIntervalMs());
+      return;
+    }
     // Routine "still fine" writes (heartbeat, poll/gateway-status cleared-
     // to-null) are batched to roughly once a minute - see
     // HEARTBEAT_WRITE_EVERY_N_TICKS's own comment. Tick 1 always writes
@@ -426,7 +512,7 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // "don't hammer a dead gateway" purpose while bounding the worst-case
     // added latency much closer to the ~90s target.
     const backoffMultiplier = Math.min(2 ** consecutiveErrors, 2);
-    setTimer(tick, pollIntervalMs() * backoffMultiplier);
+    if (!shuttingDown) setTimer(tick, pollIntervalMs() * backoffMultiplier);
   };
 
   setTimer(tick, pollIntervalMs());
@@ -451,6 +537,7 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   // ran long - a real send to the gateway occasionally might).
   let sendingFlush = false;
   const sendFlushInterval = setIntervalFn(async () => {
+    if (!leaseHeld || shuttingDown) return;
     if (sendingFlush) return;
     sendingFlush = true;
     try {
@@ -529,6 +616,7 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   // boolean-flag pattern as its two siblings.
   let maintenanceTicking = false;
   const autosendInterval = setIntervalFn(async () => {
+    if (!leaseHeld || shuttingDown) return;
     if (maintenanceTicking) return;
     maintenanceTicking = true;
     try {
@@ -694,6 +782,7 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
 
   let healthChecking = false;
   const healthCheckInterval = setIntervalFn(async () => {
+    if (!leaseHeld || shuttingDown) return;
     if (healthChecking) return;
     healthChecking = true;
     // LIVE INCIDENT (2026-11-24) - the repeating false-alert cadence
@@ -717,7 +806,33 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     healthChecking = false;
   }, HEALTH_CHECK_MS);
 
-  return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); clearInterval(healthCheckInterval); clearInterval(metricsLogInterval); } };
+  // HARDENING (2026-11-24), point 3 (graceful shutdown) - registered with
+  // whatsappAssistant's own SIGTERM/SIGINT handler (which awaits this,
+  // bounded, before calling process.exit). Stops every tick from
+  // scheduling/accepting new work, gives whatever's ALREADY in flight a
+  // short bounded window to finish on its own, then releases the lease
+  // immediately rather than waiting out its TTL - so a fresh replacement
+  // process (the normal case: this IS a redeploy) can acquire it right
+  // away instead of sitting in standby for up to 30s for no reason.
+  async function waitForInFlightWorkToSettle(maxWaitMs) {
+    const deadline = Date.now() + maxWaitMs;
+    while (Date.now() < deadline) {
+      if (!polling && !sendingFlush && !maintenanceTicking && !healthChecking) return;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+  whatsappAssistant.registerShutdownDrainHook(async () => {
+    shuttingDown = true;
+    clearInterval(sendFlushInterval);
+    clearInterval(autosendInterval);
+    clearInterval(healthCheckInterval);
+    clearInterval(metricsLogInterval);
+    clearInterval(leaseRenewInterval);
+    await waitForInFlightWorkToSettle(8000);
+    await releaseSchedulerLeaseIfHeld();
+  });
+
+  return { stop: () => { shuttingDown = true; clearInterval(autosendInterval); clearInterval(sendFlushInterval); clearInterval(healthCheckInterval); clearInterval(metricsLogInterval); clearInterval(leaseRenewInterval); } };
 }
 
 module.exports = { start, getJobHeartbeats, runMaintenanceJob, runMaintenanceJobBackground };

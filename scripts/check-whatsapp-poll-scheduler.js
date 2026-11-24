@@ -99,8 +99,13 @@ async function main() {
     // Give the recursive tick chain time to: fire once, hit the hung
     // pollOnce(), have the breaker fire (150ms), record the error, then
     // schedule and fire a SECOND tick - proving the loop moved on instead
-    // of freezing forever on the first hang.
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // of freezing forever on the first hang. Widened from 900ms (LIVE
+    // FLAKE, 2026-11-24) after the point-4 lease check added one real
+    // (local, but still real) Redis round-trip tick #1 now explicitly
+    // awaits before its own real work starts - under the full gate's 36-
+    // suite parallel CPU contention this occasionally pushed past 900ms,
+    // even though it's near-instant running solo.
+    await new Promise((resolve) => setTimeout(resolve, 2500));
 
     check('pollOnce() was actually called (the tick ran)', pollOnceCallCount >= 1, 'calls: ' + pollOnceCallCount);
     // LIVE INCIDENT (2026-11-23, direct instruction) - pollEvents() (the
@@ -397,6 +402,107 @@ async function main() {
         });
       }
     })();
+
+    console.log('='.repeat(70));
+    console.log('HARDENING (2026-11-24, direct instruction) - single-instance KV lease (point 4) + graceful shutdown draining (point 3)');
+    console.log('='.repeat(70));
+    await checkLeaseAcquisitionAndStandby();
+    await checkGracefulShutdownDrainHook();
+
+    async function freshScheduler() {
+      delete require.cache[require.resolve('../src/whatsappPollScheduler')];
+      return require('../src/whatsappPollScheduler');
+    }
+    async function getTestRedis() {
+      const { Redis } = require('@upstash/redis');
+      return new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    }
+    async function checkLeaseAcquisitionAndStandby() {
+      const redis = await getTestRedis();
+      await redis.del('wa-scheduler-lease').catch(() => {});
+
+      // Case 1: no existing lease at all - a fresh instance acquires it
+      // almost immediately (well within its own short poll interval), and
+      // its real tick work (pollOnce) proceeds normally.
+      let pollCount1 = 0;
+      const fresh1 = await freshScheduler();
+      const wa1 = whatsappAssistant;
+      const origPollOnce1 = wa1.pollOnce;
+      wa1.pollOnce = async () => { pollCount1++; return { checked: 0 }; };
+      let handle1;
+      try {
+        handle1 = fresh1.start({ setTimer: setTimeout, setInterval: fakeSetInterval, log: noopLog });
+        await new Promise((resolve) => setTimeout(resolve, 2500)); // widened - see the original test's own wait comment above
+        check('with no existing lease, a fresh instance acquires it and its real tick work (pollOnce) proceeds normally', pollCount1 >= 1, 'pollCount1=' + pollCount1);
+        const heldValue = await redis.get('wa-scheduler-lease');
+        check('the lease key in Redis now holds a real instance id (not empty/null) after acquisition', Boolean(heldValue));
+      } finally {
+        if (handle1 && handle1.stop) handle1.stop();
+        wa1.pollOnce = origPollOnce1;
+      }
+
+      // Case 2: another instance already holds a fresh (non-expired) lease
+      // - this new instance must NEVER run real tick work (pollOnce) while
+      // standing by, protecting against two copies double-processing the
+      // same messages.
+      await redis.set('wa-scheduler-lease', 'simulated-other-instance-id', { ex: 30 });
+      let pollCount2 = 0;
+      const fresh2 = await freshScheduler();
+      const wa2 = whatsappAssistant;
+      const origPollOnce2 = wa2.pollOnce;
+      wa2.pollOnce = async () => { pollCount2++; return { checked: 0 }; };
+      let handle2;
+      try {
+        handle2 = fresh2.start({ setTimer: setTimeout, setInterval: fakeSetInterval, log: noopLog });
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        check('LIVE CONCERN (direct instruction, point 4) - while ANOTHER instance holds the lease, this one never calls pollOnce (stays in standby) - protects against a duplicate app instance double-processing messages', pollCount2 === 0, 'pollCount2=' + pollCount2);
+        const stillOther = await redis.get('wa-scheduler-lease');
+        check('the OTHER instance\'s lease is left completely untouched (never stolen/overwritten) by the standby instance', stillOther === 'simulated-other-instance-id');
+      } finally {
+        if (handle2 && handle2.stop) handle2.stop();
+        wa2.pollOnce = origPollOnce2;
+        await redis.del('wa-scheduler-lease').catch(() => {});
+      }
+    }
+    async function checkGracefulShutdownDrainHook() {
+      const redis = await getTestRedis();
+      await redis.del('wa-scheduler-lease').catch(() => {});
+      const fresh = await freshScheduler();
+      let pollCount = 0;
+      const origPollOnce = whatsappAssistant.pollOnce;
+      whatsappAssistant.pollOnce = async () => { pollCount++; return { checked: 0 }; };
+      try {
+        fresh.start({ setTimer: setTimeout, setInterval: fakeSetInterval, log: noopLog });
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        check('setup: this instance holds the lease and its tick is running before shutdown is simulated', pollCount >= 1);
+        const heldBeforeShutdown = await redis.get('wa-scheduler-lease');
+        check('setup: the lease key holds THIS instance\'s own id before shutdown', Boolean(heldBeforeShutdown));
+
+        // Simulate the real SIGTERM path: whatsappAssistant's own handler
+        // awaits every registered drain hook (this module registered one
+        // via registerShutdownDrainHook) before the process would exit.
+        const beforeSigterm = process.listeners('SIGTERM').slice();
+        whatsappAssistant.installProcessExitDiagnostics(noopLog);
+        const sigtermListener = process.listeners('SIGTERM').find((l) => !beforeSigterm.includes(l));
+        const origExit = process.exit;
+        process.exit = () => {};
+        try { await sigtermListener(); } finally {
+          process.exit = origExit;
+          const added = process.listeners('SIGTERM').find((l) => !beforeSigterm.includes(l));
+          if (added) process.removeListener('SIGTERM', added);
+        }
+
+        const releasedAfterShutdown = await redis.get('wa-scheduler-lease');
+        check('HARDENING, point 3 (graceful shutdown) - the drain hook releases this instance\'s own lease immediately on SIGTERM, rather than waiting out its 30s TTL, so a replacement process can take over right away', !releasedAfterShutdown, 'remaining value: ' + JSON.stringify(releasedAfterShutdown));
+
+        const countAfterShutdown = pollCount;
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        check('after the drain hook runs, this instance never schedules/accepts further tick work (shuttingDown stops the recursive chain)', pollCount === countAfterShutdown, 'before=' + countAfterShutdown + ' after=' + pollCount);
+      } finally {
+        whatsappAssistant.pollOnce = origPollOnce;
+        await redis.del('wa-scheduler-lease').catch(() => {});
+      }
+    }
   }
 
   console.log('='.repeat(70));

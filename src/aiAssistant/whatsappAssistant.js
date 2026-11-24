@@ -11675,6 +11675,30 @@ function recordShutdownReasonBounded(reason, extra, boundMs) {
     new Promise((resolve) => setTimeout(resolve, boundMs || 3000))
   ]);
 }
+// HARDENING (2026-11-24), direct instruction, point 3 (graceful
+// shutdown) - a deploy/restart sending SIGTERM used to exit immediately
+// with no draining at all: new work could still be mid-flight (a gateway
+// send, a report render) and get killed outright, never resumed/requeued.
+// Any module that owns in-flight work it wants a chance to finish (or at
+// least stop ACCEPTING new work) before the process actually exits
+// registers a hook here; the SIGTERM/SIGINT handler below awaits each one
+// (individually bounded, so one slow/stuck hook can never itself block
+// shutdown forever) before calling process.exit(0).
+const shutdownDrainHooks = [];
+function registerShutdownDrainHook(fn) { shutdownDrainHooks.push(fn); }
+const SHUTDOWN_DRAIN_HOOK_TIMEOUT_MS = 12000;
+async function runShutdownDrainHooks(log) {
+  for (const hook of shutdownDrainHooks) {
+    try {
+      await Promise.race([
+        Promise.resolve().then(hook),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('drain hook exceeded ' + SHUTDOWN_DRAIN_HOOK_TIMEOUT_MS + 'ms')), SHUTDOWN_DRAIN_HOOK_TIMEOUT_MS))
+      ]);
+    } catch (err) {
+      log.error('[whatsapp-assistant] shutdown drain hook failed (continuing shutdown regardless): ' + err.message);
+    }
+  }
+}
 function installProcessExitDiagnostics(log) {
   // Node's default behavior for uncaughtException is to crash the
   // process - attaching a listener at all REPLACES that default, so this
@@ -11716,6 +11740,7 @@ function installProcessExitDiagnostics(log) {
     process.on(signal, async () => {
       log.log('[whatsapp-assistant] received ' + signal + ' - process stopping (likely a redeploy, restart, or host health check)');
       await recordShutdownReasonBounded(signal + ' received (no application error - likely a redeploy, restart, or host health check/memory limit)', { kind: 'signal' });
+      await runShutdownDrainHooks(log);
       process.exit(0);
     });
   });
@@ -17500,6 +17525,7 @@ module.exports = {
   recordProcessStart,
   getProcessStartInfo,
   installProcessExitDiagnostics,
+  registerShutdownDrainHook,
   recordShutdownReason,
   listRecentShutdowns,
   recordActivityBreadcrumb,
