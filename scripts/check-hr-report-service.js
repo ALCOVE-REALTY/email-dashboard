@@ -531,6 +531,64 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11-24), direct instruction - every hrReportService return now carries its own resolved `lang`, so decideAutoReply never has to re-detect language from the finished reply text (the exact root cause of an English request getting a Banglish intro)');
+  console.log('='.repeat(70));
+  await checkAsync('count intent reply carries lang (English request stays English, never re-detected as banglish from a short/sparse reply)', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000050', name: 'Someone', lang: 'english', text: 'Civil-te koto jon Active?', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'count', department: 'Civil', language: 'english' }) }
+    });
+    return result.lang === 'english';
+  });
+  await checkAsync('the column-question reply carries lang', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000051', name: 'Someone', lang: 'english', text: 'Civil dept staff list dao', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'Civil', columns: [], language: 'english' }) }
+    });
+    return result.lang === 'english';
+  });
+  await checkAsync('the "couldn\'t parse your column answer" re-ask reply carries lang (the ORIGINAL pending language, not whatever language this follow-up message happens to be in)', async () => {
+    const phone = '919000000052';
+    await hrReportService.handleHrReportRequest({
+      phone, name: 'Someone', lang: 'english', text: 'Civil dept staff list dao', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'Civil', columns: [], language: 'english' }) }
+    });
+    const result = await hrReportService.handleHrReportRequest({
+      phone, name: 'Someone', lang: 'english', text: 'ektu wait koro bhai', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => { throw new Error('must not be called - a pending column question short-circuits first'); } }
+    });
+    return result.lang === 'english';
+  });
+  await checkAsync('the honest "no rows" reply carries lang', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000053', name: 'Someone', lang: 'english', text: 'Nonexistent Place-er staff list dao', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', locations: ['Nonexistent Place'], columns: ['Name'], language: 'english' }) }
+    });
+    return result.lang === 'english';
+  });
+  await checkAsync('the "held for approval" reply carries lang', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000054', name: 'Someone Else', lang: 'english', text: 'HR dept list soho Contact No dao', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'HR Dept', columns: ['Name', 'Contact No'], language: 'english' }) }
+    });
+    return result.lang === 'english';
+  });
+  await checkAsync('the fast direct-send reply (documents + no separate text) ALSO carries lang - needed for the interim "report ready" line and any restricted-left-out note, even though there\'s no intro to prepend here', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000055', name: 'Someone Else', lang: 'english', text: 'HR dept list, Name, Designation', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'HR Dept', columns: ['Name', 'Designation'], language: 'english' }) }
+    });
+    return result.lang === 'english';
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed');
   if (fail) { console.log('Failed checks:'); failures.forEach((f) => console.log(' - ' + f)); }
   console.log('='.repeat(70));

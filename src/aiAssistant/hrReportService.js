@@ -851,13 +851,13 @@ async function beginReportRequest({ phone, name, lang, text, extracted, senderEm
   }
 
   if (extracted.intent === 'count') {
-    return { case: 'hr_report', replyText: buildCountReplyText(targets, lang, groupKeys), summaryForOwner: text.slice(0, 160) };
+    return { case: 'hr_report', replyText: buildCountReplyText(targets, lang, groupKeys), summaryForOwner: text.slice(0, 160), lang };
   }
 
   const { keys: columnKeys, wantsAll } = resolveModelColumns(extracted.columns);
   if (!columnKeys && !wantsAll) {
     await savePendingColumnQuestion(phone, { targetsFilters: targets.map((t) => t.filters), format, groupKeys, lang });
-    return { case: 'hr_report', replyText: buildColumnQuestionText(lang), summaryForOwner: text.slice(0, 160) };
+    return { case: 'hr_report', replyText: buildColumnQuestionText(lang), summaryForOwner: text.slice(0, 160), lang };
   }
   return finalizeReports({ phone, name, lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format, groupKeys, targets, senderEmployee });
 }
@@ -868,7 +868,7 @@ async function continueWithColumnAnswer({ phone, name, lang, text, pending, send
     // Couldn't parse anything usable - re-ask rather than silently drop
     // the request (the pending state is kept, not cleared, so the
     // conversation can simply be retried).
-    return { case: 'hr_report', replyText: (COULD_NOT_PARSE_COLUMNS_TEXT[pending.lang] || COULD_NOT_PARSE_COLUMNS_TEXT.english) + '\n\n' + buildColumnQuestionText(pending.lang), summaryForOwner: text.slice(0, 160) };
+    return { case: 'hr_report', replyText: (COULD_NOT_PARSE_COLUMNS_TEXT[pending.lang] || COULD_NOT_PARSE_COLUMNS_TEXT.english) + '\n\n' + buildColumnQuestionText(pending.lang), summaryForOwner: text.slice(0, 160), lang: pending.lang || lang };
   }
   await clearPendingColumnQuestion(phone);
   const targets = [];
@@ -883,7 +883,7 @@ async function finalizeReports({ phone, name, lang, columnKeys, format, groupKey
   // a (silently broken) success; now an honest, actionable message, and
   // never generates/sends any file.
   if (totalCandidates === 0) {
-    return { case: 'hr_report', replyText: NO_ROWS_TEXT[lang] || NO_ROWS_TEXT.english, summaryForOwner: 'HR report - 0 rows matched' };
+    return { case: 'hr_report', replyText: NO_ROWS_TEXT[lang] || NO_ROWS_TEXT.english, summaryForOwner: 'HR report - 0 rows matched', lang };
   }
   const isSingleSelfTarget = targets.length === 1 && Boolean(senderEmployee) && targets[0].candidates.length === 1 && targets[0].candidates[0].employeeId === senderEmployee.employeeId;
   // Phase 1 change 1 (direct instruction) - a report that resolves to
@@ -905,7 +905,7 @@ async function finalizeReports({ phone, name, lang, columnKeys, format, groupKey
       lang, preparedReplyText: previewText, preparedCard: null, preparedError: null,
       pendingReportRender: { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), format, groupKeys }
     });
-    return { case: 'hr_report', replyText: HELD_FOR_APPROVAL_TEXT[lang] || HELD_FOR_APPROVAL_TEXT.english, summaryForOwner: 'HR report held for approval - ' + totalCandidates + ' row(s)' };
+    return { case: 'hr_report', replyText: HELD_FOR_APPROVAL_TEXT[lang] || HELD_FOR_APPROVAL_TEXT.english, summaryForOwner: 'HR report held for approval - ' + totalCandidates + ' row(s)', lang };
   }
 
   await saveLastReportSelection(phone, { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), lang, format, groupKeys });
@@ -923,6 +923,7 @@ async function finalizeReports({ phone, name, lang, columnKeys, format, groupKey
     case: 'hr_report',
     replyText,
     summaryForOwner: 'HR report - ' + totalCandidates + ' row(s) across ' + targets.length + ' target(s)',
+    lang,
     pendingDocuments: {
       phone, name, lang, format, groupKeys,
       targets: targets.map((t) => ({ label: t.label, statusLabel: t.statusLabel, candidates: t.candidates })),
