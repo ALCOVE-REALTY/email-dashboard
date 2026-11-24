@@ -601,6 +601,75 @@ async function main() {
       } finally { process.env.WHATSAPP_GATEWAY = saved; restoreFetch(); }
     });
 
+    console.log('='.repeat(70));
+    console.log('HARDENING (2026-11-24, direct instruction) - webhook durability (point 1): a processing failure is no longer just dropped, it is retried (bounded) then dead-lettered');
+    console.log('='.repeat(70));
+    const { Redis } = require('@upstash/redis');
+    const testRedis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    async function clearRetryQueues() {
+      await testRedis.del(receive.FAILED_WEBHOOK_EVENTS_KEY).catch(() => {});
+      await testRedis.del(receive.WEBHOOK_DEAD_LETTERS_KEY).catch(() => {});
+    }
+    await checkAsync('LIVE GAP FIX - a webhook processing failure is kept in a durable retry queue (never silently dropped, as it used to be before this fix)', async () => {
+      await clearRetryQueues();
+      const evt = { eventId: 'dl-evid-1', event: 'message.received', data: { message: { waKey: 'true_dl_1', type: 'text', text: 'x', chat: { kind: 'user' } } } };
+      await receive.recordFailedWebhookEvent(evt, new Error('simulated processing failure'));
+      const len = await testRedis.llen(receive.FAILED_WEBHOOK_EVENTS_KEY);
+      return len === 1;
+    });
+    await checkAsync('retryFailedWebhookEvents: a retry that NOW succeeds is simply dropped from the queue (the real work already happened inside processEvent itself) - never promoted to a dead letter', async () => {
+      await clearRetryQueues();
+      const evt = { eventId: 'dl-evid-2', event: 'message.received', data: { message: { waKey: 'true_dl_2', type: 'text', text: 'x', chat: { kind: 'user' } } } };
+      await receive.recordFailedWebhookEvent(evt, new Error('simulated first failure'));
+      const result = await receive.retryFailedWebhookEvents({ processEvent: async () => ({ kept: true }) });
+      const queueLenAfter = await testRedis.llen(receive.FAILED_WEBHOOK_EVENTS_KEY);
+      const deadLettersAfter = await receive.listWebhookDeadLetters(10);
+      return result.attempted === 1 && result.recovered === 1 && result.deadLettered === 0 && queueLenAfter === 0 && !deadLettersAfter.some((d) => d.evt.eventId === 'dl-evid-2');
+    });
+    await checkAsync('retryFailedWebhookEvents: a retry that STILL fails, but under the attempt cap, is re-queued for the NEXT tick (attempts incremented) - never dead-lettered yet', async () => {
+      await clearRetryQueues();
+      const evt = { eventId: 'dl-evid-3', event: 'message.received', data: { message: { waKey: 'true_dl_3', type: 'text', text: 'x', chat: { kind: 'user' } } } };
+      await receive.recordFailedWebhookEvent(evt, new Error('simulated first failure'));
+      const result = await receive.retryFailedWebhookEvents({ processEvent: async () => { throw new Error('still failing'); } });
+      const queueAfter = await testRedis.lrange(receive.FAILED_WEBHOOK_EVENTS_KEY, 0, -1);
+      const parsed = queueAfter.map((r) => (typeof r === 'string' ? JSON.parse(r) : r));
+      const deadLettersAfter = await receive.listWebhookDeadLetters(10);
+      return result.attempted === 1 && result.recovered === 0 && result.deadLettered === 0 && parsed.length === 1 && parsed[0].attempts === 2 && !deadLettersAfter.some((d) => d.evt.eventId === 'dl-evid-3');
+    });
+    await checkAsync('LIVE GAP FIX, direct instruction - an event that keeps failing past the attempt cap becomes a visible DEAD LETTER (bounded retries, never retried forever)', async () => {
+      await clearRetryQueues();
+      const evt = { eventId: 'dl-evid-4', event: 'message.received', data: { message: { waKey: 'true_dl_4', type: 'text', text: 'x', chat: { kind: 'user' } } } };
+      // Seed directly at the max attempt count - simulates this being the
+      // LAST retry before exhausting the cap, without needing N real tick
+      // cycles in this test.
+      await testRedis.lpush(receive.FAILED_WEBHOOK_EVENTS_KEY, JSON.stringify({ evt, attempts: receive.WEBHOOK_EVENT_MAX_ATTEMPTS, firstFailedAt: Date.now(), lastError: 'simulated' }));
+      const result = await receive.retryFailedWebhookEvents({ processEvent: async () => { throw new Error('final failure'); } });
+      const queueAfter = await testRedis.llen(receive.FAILED_WEBHOOK_EVENTS_KEY);
+      const deadLetters = await receive.listWebhookDeadLetters(10);
+      return result.attempted === 1 && result.recovered === 0 && result.deadLettered === 1 && queueAfter === 0 && deadLetters.some((d) => d.evt.eventId === 'dl-evid-4');
+    });
+    await checkAsync('retryDeadLetter (owner-triggered manual retry) - a successful manual retry removes the entry from the dead-letter list, recovered:true', async () => {
+      await clearRetryQueues();
+      const evt = { eventId: 'dl-evid-5', event: 'message.received', data: { message: { waKey: 'true_dl_5', type: 'text', text: 'x', chat: { kind: 'user' } } } };
+      await testRedis.lpush(receive.FAILED_WEBHOOK_EVENTS_KEY, JSON.stringify({ evt, attempts: receive.WEBHOOK_EVENT_MAX_ATTEMPTS, firstFailedAt: Date.now(), lastError: 'simulated' }));
+      await receive.retryFailedWebhookEvents({ processEvent: async () => { throw new Error('final failure'); } }); // promotes it to a dead letter first
+      const result = await receive.retryDeadLetter(0, { processEvent: async () => ({ kept: true }) });
+      const deadLettersAfter = await receive.listWebhookDeadLetters(10);
+      return result.ok === true && result.recovered === true && !deadLettersAfter.some((d) => d.evt.eventId === 'dl-evid-5');
+    });
+    await checkAsync('retryDeadLetter - a manual retry that ALSO fails re-queues the event into the normal retry cycle (never left permanently dead just because one manual attempt also failed)', async () => {
+      await clearRetryQueues();
+      const evt = { eventId: 'dl-evid-6', event: 'message.received', data: { message: { waKey: 'true_dl_6', type: 'text', text: 'x', chat: { kind: 'user' } } } };
+      await testRedis.lpush(receive.FAILED_WEBHOOK_EVENTS_KEY, JSON.stringify({ evt, attempts: receive.WEBHOOK_EVENT_MAX_ATTEMPTS, firstFailedAt: Date.now(), lastError: 'simulated' }));
+      await receive.retryFailedWebhookEvents({ processEvent: async () => { throw new Error('final failure'); } });
+      const result = await receive.retryDeadLetter(0, { processEvent: async () => { throw new Error('manual retry also failed'); } });
+      const deadLettersAfter = await receive.listWebhookDeadLetters(10);
+      const queueAfter = await testRedis.lrange(receive.FAILED_WEBHOOK_EVENTS_KEY, 0, -1);
+      const queueParsed = queueAfter.map((r) => (typeof r === 'string' ? JSON.parse(r) : r));
+      return result.ok === true && result.recovered === false && result.requeued === true && !deadLettersAfter.some((d) => d.evt.eventId === 'dl-evid-6') && queueParsed.some((r) => r.evt.eventId === 'dl-evid-6');
+    });
+    await (async () => { await clearRetryQueues(); })();
+
   } finally {
     restoreFetch();
     if (savedEnv.WA_V1_BASE === undefined) delete process.env.WA_V1_BASE; else process.env.WA_V1_BASE = savedEnv.WA_V1_BASE;

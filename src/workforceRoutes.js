@@ -3259,13 +3259,34 @@ router.get('/hr-assistant/system-health', async (req, res) => {
   let gatewayV1Diagnostics = null;
   try { gatewayV1Diagnostics = await require('./whatsappGatewayV1Receive').getGatewayDiagnostics(); }
   catch (err) { gatewayV1Diagnostics = { error: err.message }; }
+  // HARDENING (2026-11-24), direct instruction, point 1 (webhook
+  // durability) - a dead letter is a webhook event whose processing
+  // failed every retry attempt; visible here, with a Retry action below,
+  // same independent-try/catch posture as every other section.
+  const webhookDeadLetters = await require('./whatsappGatewayV1Receive').listWebhookDeadLetters(20).catch(() => []);
   const gatewayV1Info = {
     session: systemHealthMonitor.getLatestGatewayV1Session(),
     webhookRegistered: Boolean(webhookRegistration),
     webhookUrl: webhookRegistration ? webhookRegistration.url : null,
     diagnostics: gatewayV1Diagnostics
   };
-  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, recentShutdowns, recentPollSkips, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats(), gatewayV1: gatewayV1Info });
+  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, recentShutdowns, recentPollSkips, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats(), gatewayV1: gatewayV1Info, webhookDeadLetters });
+});
+// HARDENING (2026-11-24), direct instruction, point 1 - manual retry for
+// one dead-letter entry (identified by its position in the list the GET
+// route above just returned) - re-attempts it immediately; on a further
+// failure it goes back into the normal bounded retry queue rather than
+// sitting dead just because one manual attempt also failed.
+router.post('/hr-assistant/webhook-dead-letters/:index/retry', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const index = Number(req.params.index);
+    if (!Number.isInteger(index) || index < 0) return res.status(400).json({ error: 'Invalid index.' });
+    const result = await require('./whatsappGatewayV1Receive').retryDeadLetter(index);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Part B phase 3 (2026-11, direct instruction), LIVE BUG FIX (2026-11) -

@@ -663,6 +663,15 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // reason for either to need its own separate timer.
     await runMaintenanceJob(log, 'daily summary check', () => whatsappAssistant.checkAndPostDailySummary());
     await runMaintenanceJob(log, 'document retention sweep', () => documentRequests.runRetentionSweep());
+    // HARDENING (2026-11-24), direct instruction, point 1 (webhook
+    // durability) - retries webhook events whose processing failed
+    // earlier (never on the webhook ack path itself, which stays fast),
+    // bounded, before anything becomes a dead letter.
+    await runMaintenanceJob(log, 'webhook failed-event retry', async () => {
+      const result = await require('./whatsappGatewayV1Receive').retryFailedWebhookEvents();
+      if (result.attempted) log.log('[whatsapp-gateway-v1] webhook retry: ' + JSON.stringify(result));
+      return result;
+    });
     // SUBH Reminders (Phase 2, speed fix) - auto-creating/closing reminders
     // from the 4 tracked sources (WhatsApp follow-ups, pending approvals,
     // received documents, expiring memories) used to run on every single

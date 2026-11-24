@@ -231,8 +231,9 @@ Real API calls: 0 · cost $0.0000
 ```
 
 ## check-whatsapp-poll-scheduler.js
-Flaked on 2026-11-24T10:34:59.443Z - failed once, passed on a lone solo retry.
+Flaked on 2026-11-24T11:37:53.368Z - failed once, passed on a lone solo retry.
 ```
+[ok] the backgrounded slow job does eventually run to completion on its own
 [ok] the backgrounded job still records a normal heartbeat once it finishes
 [ok] a second firing of the SAME job while the first is still in flight is skipped outright - never double-started
 [ok] once the first run finishes, its own onResult still fires exactly once
@@ -267,9 +268,8 @@ HARDENING (2026-11-24, direct instruction) - single-instance KV lease (point 4) 
 [ok] HARDENING, point 3 (graceful shutdown) - the drain hook releases this instance's own lease immediately on SIGTERM, rather than waiting out its 30s TTL, so a replacement process can take over right away
 [ok] after the drain hook runs, this instance never schedules/accepts further tick work (shuttingDown stops the recursive chain)
 ======================================================================
-46/48 passed
+49/50 passed
 Failed checks:
- - pollOnce() was actually called (the tick ran) -- calls: 0
- - pollEvents() (new-gateway backup polling) is actually called by the scheduler's fast tick - was NEVER wired in before this fix -- calls: 0
+ - a second maintenance tick firing while the first is still running is skipped outright (never overlaps) -- calls while first still in flight: 0
 ======================================================================
 ```

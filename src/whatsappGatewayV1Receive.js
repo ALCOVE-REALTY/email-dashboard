@@ -395,6 +395,110 @@ async function listRecentWebhookHits(limit) {
   return (raw || []).map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean);
 }
 
+// HARDENING (2026-11-24), direct instruction, point 1 (webhook
+// durability) - the existing design DELIBERATELY still 2xx's a
+// processing failure (see handleWebhookRequestBody's own comment: never
+// make the gateway hammer retries for 24h over a bug on our side) - but
+// that meant a genuine processing failure silently DROPPED the message
+// forever, with only a generic log line in the general hit list, no
+// retry, no dedicated visibility. This durable queue replaces that: a
+// failed event is kept (never the webhook hit log alone), retried a
+// bounded number of times on the maintenance tick (never on the webhook
+// ack path itself - that stays fast), and only after genuinely exhausting
+// its retries does it land in a capped, clearly separate DEAD LETTER list
+// for the System health card - with a Retry action available, since the
+// raw event is still right there.
+const FAILED_WEBHOOK_EVENTS_KEY = 'wa-v1-webhook-failed-events';
+const WEBHOOK_DEAD_LETTERS_KEY = 'wa-v1-webhook-dead-letters';
+const WEBHOOK_DEAD_LETTERS_CAP = 100;
+const WEBHOOK_EVENT_MAX_ATTEMPTS = 3;
+async function recordFailedWebhookEvent(evt, err) {
+  const redis = gatewayV1.getRedisClient();
+  if (!redis) return;
+  try {
+    await redis.lpush(FAILED_WEBHOOK_EVENTS_KEY, JSON.stringify({
+      evt, attempts: 1, firstFailedAt: Date.now(), lastError: String((err && err.message) || err).slice(0, 300)
+    }));
+  } catch (e) { /* best effort - the general webhook hit log still has a trace either way */ }
+}
+async function recordDeadLetter(entry) {
+  const redis = gatewayV1.getRedisClient();
+  if (!redis) return;
+  try {
+    await redis.lpush(WEBHOOK_DEAD_LETTERS_KEY, JSON.stringify(entry));
+    await redis.ltrim(WEBHOOK_DEAD_LETTERS_KEY, 0, WEBHOOK_DEAD_LETTERS_CAP - 1);
+  } catch (e) { /* best effort */ }
+}
+async function listWebhookDeadLetters(limit) {
+  const redis = gatewayV1.getRedisClient();
+  if (!redis) return [];
+  const raw = await redis.lrange(WEBHOOK_DEAD_LETTERS_KEY, 0, (limit || 20) - 1).catch(() => []);
+  return (raw || []).map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean);
+}
+// Called from the scheduler's maintenance tick (never the webhook ack
+// path - retries are deliberately NOT time-pressured). Each entry is
+// popped, retried once; a success is simply dropped from the queue (the
+// real work - recordFromNormalizedMessage etc. - already happened inside
+// processEvent itself), a failure under the attempt cap is pushed back
+// for the NEXT tick to try again, and a failure that exhausts the cap
+// moves to the dead-letter list instead of retrying forever.
+// `deps.processEvent` - test-only seam (defaults to the real
+// processEvent), same convention this codebase already uses elsewhere
+// (e.g. recoverStuckIncomingMessages's own deps.actOn) - lets a test
+// drive success/failure/dead-lettering deterministically without needing
+// to craft a payload that naturally throws.
+async function retryFailedWebhookEvents(deps) {
+  const doProcessEvent = (deps && deps.processEvent) || processEvent;
+  const redis = gatewayV1.getRedisClient();
+  if (!redis) return { attempted: 0, recovered: 0, deadLettered: 0 };
+  let attempted = 0, recovered = 0, deadLettered = 0;
+  // Drain exactly what's there NOW (LLEN first) - never loop forever if
+  // something keeps re-pushing while this runs (it can't, single process,
+  // but this is the same "bounded work per tick" discipline every other
+  // job in this tick already follows).
+  const total = await redis.llen(FAILED_WEBHOOK_EVENTS_KEY).catch(() => 0);
+  for (let i = 0; i < total; i++) {
+    const raw = await redis.rpop(FAILED_WEBHOOK_EVENTS_KEY).catch(() => null);
+    if (!raw) break;
+    let record;
+    try { record = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { continue; }
+    attempted++;
+    try {
+      await doProcessEvent(record.evt);
+      recovered++;
+    } catch (err) {
+      if (record.attempts >= WEBHOOK_EVENT_MAX_ATTEMPTS) {
+        await recordDeadLetter({ evt: record.evt, attempts: record.attempts + 1, firstFailedAt: record.firstFailedAt, lastFailedAt: Date.now(), lastError: String((err && err.message) || err).slice(0, 300) });
+        deadLettered++;
+      } else {
+        await redis.lpush(FAILED_WEBHOOK_EVENTS_KEY, JSON.stringify({ evt: record.evt, attempts: record.attempts + 1, firstFailedAt: record.firstFailedAt, lastError: String((err && err.message) || err).slice(0, 300) })).catch(() => {});
+      }
+    }
+  }
+  return { attempted, recovered, deadLettered };
+}
+// Manual retry (owner-triggered, e.g. a "Retry" action on the health
+// card) - re-attempts ONE dead-letter entry by its position in the list;
+// removes it from the dead-letter list either way (success: done;
+// failure: re-queued into the normal failed-events retry cycle instead of
+// sitting dead forever just because the owner happened to try once).
+async function retryDeadLetter(index, deps) {
+  const doProcessEvent = (deps && deps.processEvent) || processEvent;
+  const redis = gatewayV1.getRedisClient();
+  if (!redis) return { ok: false, error: 'no KV configured' };
+  const items = await listWebhookDeadLetters(WEBHOOK_DEAD_LETTERS_CAP);
+  const entry = items[index];
+  if (!entry) return { ok: false, error: 'not found' };
+  await redis.lrem(WEBHOOK_DEAD_LETTERS_KEY, 1, JSON.stringify(entry)).catch(() => {});
+  try {
+    await doProcessEvent(entry.evt);
+    return { ok: true, recovered: true };
+  } catch (err) {
+    await redis.lpush(FAILED_WEBHOOK_EVENTS_KEY, JSON.stringify({ evt: entry.evt, attempts: 1, firstFailedAt: Date.now(), lastError: String((err && err.message) || err).slice(0, 300) })).catch(() => {});
+    return { ok: true, recovered: false, requeued: true };
+  }
+}
+
 // LIVE INCIDENT (2026-11-23) - IT's own diagnosis, confirmed directly
 // against the code: an EMPTY, UNSIGNED test POST (no real gateway
 // payload at all) still hung for ~25s, while the gateway's own polling
@@ -445,9 +549,15 @@ async function handleWebhookRequestBody(req) {
   } catch (err) {
     // Never fail the ack over our own processing error - the gateway
     // would otherwise retry a delivery that already reached us fine, for
-    // up to 24h, over a bug on our side. Log and still 2xx.
+    // up to 24h, over a bug on our side. Log and still 2xx. HARDENING
+    // (2026-11-24), point 1 - this used to mean the event was simply
+    // LOST (only a generic log line, never retried by anyone): the raw
+    // event is now kept in a durable retry queue (retryFailedWebhookEvents,
+    // run on the maintenance tick) instead of dropped, with a bounded
+    // number of attempts before it becomes a visible dead letter.
     console.error('[whatsapp-gateway-v1] webhook processing error: ' + err.message);
     await recordWebhookHit('error', err.message);
+    await recordFailedWebhookEvent(evt, err);
   }
   return { status: 200, body: { ok: true } };
 }
@@ -659,6 +769,13 @@ module.exports = {
   isDuplicateMessage,
   recordWebhookHit,
   listRecentWebhookHits,
+  recordFailedWebhookEvent,
+  retryFailedWebhookEvents,
+  listWebhookDeadLetters,
+  retryDeadLetter,
+  FAILED_WEBHOOK_EVENTS_KEY,
+  WEBHOOK_DEAD_LETTERS_KEY,
+  WEBHOOK_EVENT_MAX_ATTEMPTS,
   getPollDiagnostics,
   getGatewayDiagnostics,
   // Test-only seams

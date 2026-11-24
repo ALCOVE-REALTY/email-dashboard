@@ -181,12 +181,34 @@ async function main() {
     // second concurrent run instead of letting both execute together.
     const maintenanceEntry = fakeHeavyIntervals.find((e) => e.ms === 30 * 1000);
     check('the maintenance (autosend/background-jobs) tick was registered with its real 30s interval', Boolean(maintenanceEntry));
+    // HARDENING (2026-11-24), direct instruction, point 5 (circuit
+    // breaker) - redisHealth's own consecutiveFailures is real, GLOBAL,
+    // process-wide state (by design - it tracks the real Redis client's
+    // own health across the whole app). Under the full gate's heavy
+    // parallel CPU contention, an earlier transient blip ANYWHERE in this
+    // Redis-heavy test file (guardedRead/guardedWrite calls run
+    // throughout) could leave it non-zero by the time this test runs,
+    // which would now make runMaintenanceTick pause itself - exactly what
+    // broke this test once already (LIVE FLAKE, 2026-11-24). Explicitly
+    // reset before relying on the maintenance tick's jobs actually
+    // running, same as any other global state a test must not inherit
+    // from whatever ran before it.
+    require('../src/redisHealth').recordWriteSuccess();
     let dailySummaryCallCount = 0;
     let releaseDailySummary;
     const dailySummaryGate = new Promise((resolve) => { releaseDailySummary = resolve; });
     whatsappAssistant.checkAndPostDailySummary = async () => { dailySummaryCallCount++; await dailySummaryGate; };
     const firstMaintenanceRun = maintenanceEntry.fn(); // never awaited - simulates setInterval firing again before this resolves
-    await new Promise((resolve) => setTimeout(resolve, 20)); // let the first run actually start and block on the gate
+    // Widened from 20ms (LIVE FLAKE, 2026-11-24) - runMaintenanceTick now
+    // does one real (if local) Redis round-trip of its own
+    // (isGatewayConsecutivelyBad, point 5's circuit breaker) before ever
+    // reaching checkAndPostDailySummary; under the full gate's 36-suite
+    // parallel CPU contention this occasionally pushed past 20ms, so the
+    // first run hadn't yet reached (and started blocking on) its own gate
+    // by the time this fired - never a real overlap-guard bug, purely a
+    // timing margin that needed widening for the same reason as the
+    // earlier lease-check flake.
+    await new Promise((resolve) => setTimeout(resolve, 500)); // let the first run actually start and block on the gate
     const secondMaintenanceRun = maintenanceEntry.fn(); // a second "tick" while the first is still in flight
     await secondMaintenanceRun; // the guard makes this an instant no-op - must not wait on the gate
     check('a second maintenance tick firing while the first is still running is skipped outright (never overlaps)', dailySummaryCallCount === 1, 'calls while first still in flight: ' + dailySummaryCallCount);

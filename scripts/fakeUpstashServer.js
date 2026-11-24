@@ -174,6 +174,19 @@ function createStore() {
       for (const v of values) entry.value.unshift(String(v));
       return entry.value.length;
     },
+    // HARDENING (2026-11-24) - added for the webhook dead-letter retry
+    // queue's own llen/rpop calls; neither existed in this fake server
+    // before (every prior list-using caller only ever needed
+    // lpush/lrange/ltrim/lrem).
+    llen(args, now) {
+      const entry = get(args[0], now);
+      return entry ? entry.value.length : 0;
+    },
+    rpop(args, now) {
+      const entry = get(args[0], now);
+      if (!entry || !entry.value.length) return null;
+      return entry.value.pop();
+    },
     lrange(args, now) {
       const entry = get(args[0], now);
       if (!entry) return [];
