@@ -358,6 +358,39 @@ async function main() {
       } finally { restoreFetch(); }
     });
 
+    console.log('='.repeat(70));
+    console.log('interpretNumberStatus - LIVE INCIDENT (2026-11-24), ROOT CAUSE, direct instruction - the ONE shared status interpretation every caller (facade.getConnectionStatus, checkGatewayV1Session) now uses, with the real v1 status payloads per IT\'s own documentation');
+    console.log('='.repeat(70));
+    check('status "active", connected:true (the documented healthy shape) -> healthy', (() => {
+      const r = gatewayV1.interpretNumberStatus({ status: 'active', connected: true });
+      return r.healthy === true && r.level === 'healthy' && r.reason === null;
+    })());
+    check('status "active" with connected:false (the exact live bug - a momentary blip) -> STILL healthy, connected is never an independent veto', (() => {
+      const r = gatewayV1.interpretNumberStatus({ status: 'active', connected: false });
+      return r.healthy === true && r.level === 'healthy';
+    })());
+    check('status "linking" -> its own distinct level, not lumped in with a real failure', (() => {
+      const r = gatewayV1.interpretNumberStatus({ status: 'linking', connected: false });
+      return r.healthy === false && r.level === 'linking' && /linking/.test(r.reason);
+    })());
+    check('status "relink_required" -> a real problem', (() => {
+      const r = gatewayV1.interpretNumberStatus({ status: 'relink_required', connected: false });
+      return r.healthy === false && r.level === 'bad' && /relink_required/.test(r.reason);
+    })());
+    check('status "disabled" -> a real problem', (() => {
+      const r = gatewayV1.interpretNumberStatus({ status: 'disabled', connected: false });
+      return r.healthy === false && r.level === 'bad' && /disabled/.test(r.reason);
+    })());
+    check('an unrecognized status value (a future gateway state this code has never seen) fails OPEN - never alarms on an unknown shape', (() => {
+      const r = gatewayV1.interpretNumberStatus({ status: 'some-future-state', connected: true });
+      return r.healthy === true && r.level === 'unknown' && /some-future-state/.test(r.reason);
+    })());
+    check('a missing status object entirely fails OPEN too, never throws', (() => {
+      const r1 = gatewayV1.interpretNumberStatus(null);
+      const r2 = gatewayV1.interpretNumberStatus({});
+      return r1.healthy === true && r2.healthy === true;
+    })());
+
   } finally {
     restoreFetch();
     if (savedEnv.WA_V1_BASE === undefined) delete process.env.WA_V1_BASE; else process.env.WA_V1_BASE = savedEnv.WA_V1_BASE;

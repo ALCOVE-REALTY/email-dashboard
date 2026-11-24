@@ -381,12 +381,42 @@ async function getNumberHealth() {
   return getJson(numbersUrl('/health'));
 }
 
+// LIVE INCIDENT (2026-11-24), direct instruction - ROOT CAUSE of the
+// repeating "SUBH health check failed: ... status is 'active'" alert
+// every ~3 minutes: every caller that reads GET /v1/numbers/{id}'s own
+// status treated `connected === false` as an INDEPENDENT veto, even when
+// `status` itself was already "active" - but per IT's own documentation
+// the 4 real states are active/linking/relink_required/disabled, and
+// "active" is unconditionally the healthy one; `connected` can read
+// false for a brief moment even while active (a transient reconnect
+// blip) without that meaning anything is actually wrong. ONE shared
+// interpretation, used by every caller (whatsappGatewayFacade.js's
+// getConnectionStatus, systemHealthMonitor.js's checkGatewayV1Session) -
+// never a second, independently-reasoned copy of this same judgment call.
+// `linking` is deliberately its own, separate level (not lumped into
+// "bad") - a caller that wants "warn only after it persists a few
+// minutes" (direct instruction) needs to tell `linking` apart from a
+// confirmed relink_required/disabled failure, not just get one boolean.
+function interpretNumberStatus(status) {
+  const s = status && status.status;
+  if (s === 'active') return { healthy: true, level: 'healthy', reason: null };
+  if (s === 'linking') return { healthy: false, level: 'linking', reason: 'status is "linking" (reconnecting)' };
+  if (s === 'relink_required' || s === 'disabled') return { healthy: false, level: 'bad', reason: 'status is "' + s + '"' };
+  // An unrecognized/missing status - fail OPEN (never alarm on a shape
+  // this code hasn't seen before - the same "never assume one exact
+  // field/value" caution every other gateway-shape check in this
+  // codebase already follows), but name it so it's still visible rather
+  // than silently indistinguishable from a genuinely healthy "active".
+  return { healthy: true, level: 'unknown', reason: s ? ('unrecognized status "' + s + '"') : 'no status field present' };
+}
+
 module.exports = {
   requireConfig, normalizePhone, newIdempotencyKey,
   sendText, sendDocument,
   wouldExceedDailyFirstContactCap, recordContactMessaged, markContactHasWrittenToUs,
   enqueueBulkSend, getBulkSendProgress,
   getNumberStatus, getNumberHealth,
+  interpretNumberStatus,
   classifyNetworkError,
   // Shared with the sibling receiving module (whatsappGatewayV1Receive.js,
   // Commit 2) - both are new-gateway modules, so sharing this one small

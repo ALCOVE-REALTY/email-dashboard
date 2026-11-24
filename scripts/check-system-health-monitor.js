@@ -590,15 +590,107 @@ async function main() {
       return result.ok === true && result.decryptionFailures === 0 && result.duplicatesSuppressed === 3;
     } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; }
   });
-  await checkAsync('with the gateway enabled and status "relink_required", reports ok:false naming the bad status', async () => {
+  await checkAsync('direct instruction - "require several consecutive failures": a "relink_required" status reports ok:true (within its own confirm window) for the first 2 checks, and only ok:false naming the bad status on the 3rd CONSECUTIVE one', async () => {
     process.env.WHATSAPP_GATEWAY = 'new';
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    await redis.del('wa-gatewayv1-consecutive-bad').catch(() => {});
     gatewayV1.getNumberStatus = async () => ({ status: 'relink_required', connected: false });
     gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
     try {
       const monitor = freshMonitor();
+      const first = await monitor.checkGatewayV1Session();
+      const second = await monitor.checkGatewayV1Session();
+      const third = await monitor.checkGatewayV1Session();
+      return first.ok === true && /confirm window/.test(first.note || '')
+        && second.ok === true && /confirm window/.test(second.note || '')
+        && third.ok === false && /relink_required/.test(third.error);
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; await redis.del('wa-gatewayv1-consecutive-bad').catch(() => {}); }
+  });
+  await checkAsync('direct instruction - a single transient bad reading (e.g. right after a real reconnect) that then recovers NEVER reaches the confirm threshold at all - the counter resets on any healthy reading', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    await redis.del('wa-gatewayv1-consecutive-bad').catch(() => {});
+    gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
+    try {
+      const monitor = freshMonitor();
+      gatewayV1.getNumberStatus = async () => ({ status: 'relink_required', connected: false });
+      const first = await monitor.checkGatewayV1Session();
+      gatewayV1.getNumberStatus = async () => ({ status: 'active', connected: true });
+      const second = await monitor.checkGatewayV1Session();
+      gatewayV1.getNumberStatus = async () => ({ status: 'relink_required', connected: false });
+      const third = await monitor.checkGatewayV1Session();
+      // third is only the FIRST bad reading again (the counter reset after
+      // `second`), so it must still be within its own confirm window, not
+      // a false "3rd in a row" purely from stale counting.
+      return first.ok === true && second.ok === true && third.ok === true && /confirm window/.test(third.note || '');
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; await redis.del('wa-gatewayv1-consecutive-bad').catch(() => {}); }
+  });
+  await checkAsync('LIVE INCIDENT (2026-11-24), ROOT CAUSE, direct instruction - status "active" with a momentary connected:false blip reports ok:true, no alert - this was the exact live bug (a healthy session alerted on essentially every single 2-minute tick)', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    gatewayV1.getNumberStatus = async () => ({ status: 'active', connected: false });
+    gatewayV1.getNumberHealth = async () => ({ lastHour: { decryptionFailures: 0, duplicatesSuppressed: 0 } });
+    try {
+      const monitor = freshMonitor();
       const result = await monitor.checkGatewayV1Session();
-      return result.ok === false && /relink_required/.test(result.error);
+      return result.ok === true;
     } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; }
+  });
+  await checkAsync('with the gateway enabled and status "disabled" persisting 3 consecutive checks, reports ok:false naming the bad status', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    await redis.del('wa-gatewayv1-consecutive-bad').catch(() => {});
+    gatewayV1.getNumberStatus = async () => ({ status: 'disabled', connected: false });
+    gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
+    try {
+      const monitor = freshMonitor();
+      await monitor.checkGatewayV1Session();
+      await monitor.checkGatewayV1Session();
+      const result = await monitor.checkGatewayV1Session();
+      return result.ok === false && /disabled/.test(result.error);
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; await redis.del('wa-gatewayv1-consecutive-bad').catch(() => {}); }
+  });
+  await checkAsync('direct instruction - "linking = connecting (warn only after a few minutes)": a FRESH "linking" sighting reports ok:true (within its own grace period), never an immediate alarm', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    await redis.del('wa-gatewayv1-linking-since').catch(() => {});
+    gatewayV1.getNumberStatus = async () => ({ status: 'linking', connected: false });
+    gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
+    try {
+      const monitor = freshMonitor();
+      const result = await monitor.checkGatewayV1Session();
+      return result.ok === true && /grace period/.test(result.note || '');
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; await redis.del('wa-gatewayv1-linking-since').catch(() => {}); }
+  });
+  await checkAsync('direct instruction - a "linking" status that has PERSISTED past the grace window (simulated via a pre-seeded old timestamp) reports ok:false, naming how long it has been linking', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    await redis.set('wa-gatewayv1-linking-since', String(Date.now() - 6 * 60 * 1000)); // 6 minutes ago - past the 5-minute grace window
+    gatewayV1.getNumberStatus = async () => ({ status: 'linking', connected: false });
+    gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
+    try {
+      const monitor = freshMonitor();
+      const result = await monitor.checkGatewayV1Session();
+      return result.ok === false && /linking/.test(result.error) && /minute/.test(result.error);
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; await redis.del('wa-gatewayv1-linking-since').catch(() => {}); }
+  });
+  await checkAsync('once status moves back to "active", the linking-since timer is cleared - a LATER linking spell starts its own fresh grace period, never inheriting an old timestamp', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    await redis.set('wa-gatewayv1-linking-since', String(Date.now() - 6 * 60 * 1000));
+    gatewayV1.getNumberStatus = async () => ({ status: 'active', connected: true });
+    gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
+    try {
+      const monitor = freshMonitor();
+      await monitor.checkGatewayV1Session();
+      const since = await redis.get('wa-gatewayv1-linking-since');
+      return !since;
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; await redis.del('wa-gatewayv1-linking-since').catch(() => {}); }
   });
   await checkAsync('with 1+ decryption failures in the last hour, reports ok:false even though status itself looks fine - the exact alert requested', async () => {
     process.env.WHATSAPP_GATEWAY = 'new';
@@ -610,21 +702,85 @@ async function main() {
       return result.ok === false && /2 message decryption failure/.test(result.error);
     } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; }
   });
-  await checkAsync('a thrown/network error while enabled reports ok:false, never throws out of runHealthCheck', async () => {
+  await checkAsync('direct instruction - "a single 503/timeout must not flip to disconnected or send an alert": a thrown status/health error reports ok:true for the first 2 checks (within its own confirm window), never throws out of runHealthCheck, and only ok:false on the 3rd CONSECUTIVE one', async () => {
     process.env.WHATSAPP_GATEWAY = 'new';
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    await redis.del('wa-gatewayv1-consecutive-bad').catch(() => {});
     gatewayV1.getNumberStatus = async () => { throw new Error('simulated network failure'); };
     gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
     try {
       const monitor = freshMonitor();
-      const result = await monitor.checkGatewayV1Session();
-      return result.ok === false && /simulated network failure/.test(result.error);
-    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; }
+      const first = await monitor.checkGatewayV1Session();
+      const second = await monitor.checkGatewayV1Session();
+      const third = await monitor.checkGatewayV1Session();
+      return first.ok === true && /confirm window/.test(first.note || '')
+        && second.ok === true && /confirm window/.test(second.note || '')
+        && third.ok === false && /simulated network failure/.test(third.error);
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; await redis.del('wa-gatewayv1-consecutive-bad').catch(() => {}); }
   });
   await checkAsync('runHealthCheck itself includes gatewayV1Session in its result and never crashes when the gateway is disabled', async () => {
     delete process.env.WHATSAPP_GATEWAY;
     const monitor = freshMonitor();
     const result = await monitor.runHealthCheck();
     return result.gatewayV1Session && result.gatewayV1Session.ok === true;
+  });
+
+  // CRASH LOOP / LIVE INCIDENT (2026-11-24), direct instruction - "alert
+  // debounce must survive restarts (store in KV), so one real problem =
+  // one alert, not one every 3 minutes." The OLD in-memory debounce reset
+  // to {lastAlertSentAt:0, wasFailingLastTick:false} on every process
+  // restart - a crash-looping process therefore re-alerted on literally
+  // every single restart (127 restarts/day, 127 alerts/day, live).
+  await checkAsync('direct instruction - the debounce state is durable in KV: a simulated restart (freshMonitor - a genuinely fresh module, its own in-memory fallback starting back at its initial unset values, exactly like a real process restart) still correctly suppresses a redundant alert for an ONGOING real failure, reading the prior state back from KV alone', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543211';
+    process.env.HR_ADMIN_EMAIL = 'owner@health-monitor-restart-test.local';
+    gatewayV1.getNumberStatus = async () => ({ status: 'relink_required', connected: false });
+    gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
+    // sendAlert routes through whatsappGatewayFacade (not whatsappService
+    // directly) once gateway=new - mock the facade's own send, not the
+    // old client, or this mock is silently never reached.
+    const whatsappSendFacade = require('../src/whatsappGatewayFacade');
+    const origFacadeSend = whatsappSendFacade.sendWhatsAppMessage;
+    const origMail = gmailService.sendMail;
+    let whatsappAlertCalls = 0;
+    whatsappSendFacade.sendWhatsAppMessage = async () => { whatsappAlertCalls++; return { ok: true }; };
+    gmailService.sendMail = async () => ({ id: 'test' });
+    const redisForBadCount = new (require('@upstash/redis').Redis)({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    try {
+      // Explicit clean slate - never assume an earlier test in this same
+      // file left the debounce key unset; this test's own correctness
+      // must not depend on execution order. Pre-warm the consecutive-bad
+      // counter to 2 (direct instruction's own "require several
+      // consecutive failures" gate, added in this same fix) so THIS
+      // test's own first runHealthCheck() call is already the 3rd
+      // consecutive bad reading - the debounce behavior being tested
+      // here is a separate concern from that confirm-window gate.
+      await freshMonitor().setAlertDebounceState({ lastAlertSentAt: 0, wasFailingLastTick: false });
+      await redisForBadCount.set('wa-gatewayv1-consecutive-bad', '2');
+      const monitor1 = freshMonitor();
+      const first = await monitor1.runHealthCheck();
+      // A genuinely FRESH module (freshMonitor deletes the require cache)
+      // - its own in-memory fallback has no memory of `first` at all,
+      // the same blank slate a real process restart leaves behind. Only
+      // a correct KV read can make it suppress the redundant alert below.
+      const monitor2 = freshMonitor();
+      const second = await monitor2.runHealthCheck();
+      return first.ok === false && first.alertSent === true && whatsappAlertCalls === 1
+        && second.ok === false && second.alertSent === false && whatsappAlertCalls === 1;
+    } finally {
+      restoreGatewayV1();
+      whatsappSendFacade.sendWhatsAppMessage = origFacadeSend;
+      gmailService.sendMail = origMail;
+      delete process.env.WHATSAPP_GATEWAY;
+      delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+      delete process.env.HR_ADMIN_EMAIL;
+      await whatsappAssistant.clearSystemHealthAlert().catch(() => {});
+      const freshForCleanup = freshMonitor();
+      await freshForCleanup.setAlertDebounceState({ lastAlertSentAt: 0, wasFailingLastTick: false }).catch(() => {});
+      await redisForBadCount.del('wa-gatewayv1-consecutive-bad').catch(() => {});
+    }
   });
 
   console.log('='.repeat(70));

@@ -18,9 +18,22 @@
 // email alert to the owner - two channels that do NOT depend on KV at
 // all (the WhatsApp gateway send path is pure HTTP + an in-process
 // queue; email goes through Gmail directly), so at least one of them
-// gets through for any single-point failure. Debounced in-memory (never
-// in KV, for the same "don't depend on the failed part" reason) so a
-// sustained outage pages once, not every 2 minutes forever.
+// gets through for any single-point failure. Debounced in KV (2026-11-24,
+// direct instruction - CHANGED from the original in-memory design,
+// below, after a live incident: an in-memory debounce resets on every
+// process restart, so a crash-looping process re-alerted on literally
+// EVERY restart regardless of the real 30-minute interval - 127
+// restarts/day, 127 alerts/day. KV is still read fail-OPEN (a read
+// failure is treated as "never alerted before", the exact same posture
+// the old in-memory default had) - if KV itself is the thing that's
+// down, checkKv() already reports that failure on its own, and this
+// debounce simply falls back to firing anyway rather than silently
+// never alerting, same net behavior as before for that one specific
+// case. Original reasoning, now superseded: "never in KV, for the same
+// 'don't depend on the failed part' reason, so a sustained outage pages
+// once, not every 2 minutes forever" - true for a genuinely STABLE
+// process, but actively harmful for a crash-looping one, which is
+// exactly the failure mode that needed catching here.
 const whatsapp = require('../whatsappService');
 const gmailService = require('../gmailService');
 const employeeService = require('../employeeService');
@@ -234,21 +247,100 @@ function readHealthCount(health, keys) {
   }
   return 0;
 }
+// LIVE INCIDENT (2026-11-24), direct instruction - "linking = connecting
+// (warn only after a few minutes)". Durable in KV (fail-open: no KV, or
+// a read/write hiccup, just means a fresh "linking" never immediately
+// alarms - exactly the safe default) so this persistence is tracked
+// correctly across the 2-minute tick's own restarts, never reset to
+// "just started" by a restart the way an in-memory timer would be.
+const GATEWAY_V1_LINKING_SINCE_KEY = 'wa-gatewayv1-linking-since';
+const LINKING_WARN_AFTER_MS = 5 * 60 * 1000;
+// LIVE INCIDENT (2026-11-24), direct instruction - "a single 503/timeout
+// must not flip to disconnected or send an alert... require several
+// consecutive failures." A transient 503/aborted status call (confirmed
+// in the real logs: a 503 immediately followed by a clean "active"
+// read seconds later) is routine network noise, not a real session
+// problem - durable in KV (same restart-survival reasoning as the
+// linking-since timer and the alert debounce above) so this persists
+// correctly across the 2-minute tick's own process restarts too.
+const GATEWAY_V1_CONSECUTIVE_BAD_KEY = 'wa-gatewayv1-consecutive-bad';
+const GATEWAY_V1_CONFIRM_THRESHOLD = 3; // ~6 minutes at this check's own 2-minute cadence
+async function bumpGatewayV1BadCount() {
+  const redis = getRawRedisClient();
+  if (!redis) return 1; // no durable tracking possible - never alarms on the very first occurrence either
+  try { return await redis.incr(GATEWAY_V1_CONSECUTIVE_BAD_KEY); } catch (err) { return 1; }
+}
+async function resetGatewayV1BadCount() {
+  const redis = getRawRedisClient();
+  if (!redis) return;
+  await redis.del(GATEWAY_V1_CONSECUTIVE_BAD_KEY).catch(() => {});
+}
 async function checkGatewayV1Session() {
   if (!gatewayModeV1.isNewGatewayEnabled()) return { ok: true, note: 'new gateway not enabled' };
+  const callStartedAt = Date.now();
   try {
     const [status, health] = await Promise.all([
       withTimeout(gatewayV1.getNumberStatus(), HEALTH_CHECK_TIMEOUT_MS),
       withTimeout(gatewayV1.getNumberHealth(), HEALTH_CHECK_TIMEOUT_MS)
     ]);
+    // LIVE INCIDENT (2026-11-24), direct instruction - "log gateway
+    // response times... if the gateway itself is slow, tell me so I can
+    // ask IT." Measures the combined status+health round trip (run in
+    // parallel above) - a real, visible number instead of only ever
+    // seeing a timeout/error with no sense of how close to the 8s budget
+    // a SUCCESSFUL call actually ran.
+    const callMs = Date.now() - callStartedAt;
     const decryptionFailures = readHealthCount(health, ['decryptionFailures', 'decryption_failures', 'decryptFailures']);
     const duplicatesSuppressed = readHealthCount(health, ['duplicatesSuppressed', 'redeliveriesSuppressed', 'redeliveries_suppressed', 'duplicates_suppressed']);
-    const badStatus = status && (status.status === 'relink_required' || status.status === 'disabled' || status.connected === false);
-    if (badStatus) return { ok: false, error: 'WhatsApp v1 gateway session problem: status is "' + (status && status.status) + '"', status, health, decryptionFailures, duplicatesSuppressed };
-    if (decryptionFailures > 0) return { ok: false, error: decryptionFailures + ' message decryption failure(s) in the last hour on the v1 gateway', status, health, decryptionFailures, duplicatesSuppressed };
-    return { ok: true, status, health, decryptionFailures, duplicatesSuppressed };
+    // ROOT CAUSE (direct instruction) - this used to ALSO treat a bare
+    // `status.connected === false` as its own independent failure, even
+    // when status.status was already "active" (the actually-healthy
+    // state per IT's own documentation) - every tick reported "status is
+    // active" as a FAILURE purely because connected read false in that
+    // exact moment, which is why this alert fired on essentially every
+    // single 2-minute tick. Now uses the one shared interpretNumberStatus
+    // (see its own comment, whatsappGatewayV1.js) - "active" is always
+    // healthy regardless of `connected`; only relink_required/disabled
+    // are real problems, and "linking" gets its own grace period below
+    // rather than being lumped in as an immediate failure.
+    const interpreted = gatewayV1.interpretNumberStatus(status);
+    const redis = getRawRedisClient();
+    if (interpreted.level === 'linking') {
+      let since = null;
+      if (redis) {
+        const raw = await redis.get(GATEWAY_V1_LINKING_SINCE_KEY).catch(() => null);
+        since = Number(raw) || 0;
+        if (!since) { since = Date.now(); await redis.set(GATEWAY_V1_LINKING_SINCE_KEY, String(since)).catch(() => {}); }
+      } else {
+        since = Date.now(); // no durable tracking possible - never alarms on the very first sighting
+      }
+      const persistedMs = Date.now() - since;
+      if (persistedMs >= LINKING_WARN_AFTER_MS) {
+        return { ok: false, error: 'WhatsApp v1 gateway session problem: ' + interpreted.reason + ', for ' + Math.round(persistedMs / 60000) + '+ minute(s)', status, health, decryptionFailures, duplicatesSuppressed, callMs };
+      }
+      return { ok: true, status, health, decryptionFailures, duplicatesSuppressed, callMs, note: 'linking, within grace period (' + Math.round(persistedMs / 1000) + 's)' };
+    }
+    if (redis) await redis.del(GATEWAY_V1_LINKING_SINCE_KEY).catch(() => {}); // no longer linking - clear any stale timer so a LATER linking spell starts its own fresh grace period
+    if (!interpreted.healthy) {
+      const count = await bumpGatewayV1BadCount();
+      if (count < GATEWAY_V1_CONFIRM_THRESHOLD) {
+        return { ok: true, status, health, decryptionFailures, duplicatesSuppressed, callMs, note: 'degraded (' + interpreted.reason + '), within confirm window (' + count + '/' + GATEWAY_V1_CONFIRM_THRESHOLD + ')' };
+      }
+      return { ok: false, error: 'WhatsApp v1 gateway session problem: ' + interpreted.reason, status, health, decryptionFailures, duplicatesSuppressed, callMs };
+    }
+    await resetGatewayV1BadCount();
+    if (decryptionFailures > 0) return { ok: false, error: decryptionFailures + ' message decryption failure(s) in the last hour on the v1 gateway', status, health, decryptionFailures, duplicatesSuppressed, callMs };
+    return { ok: true, status, health, decryptionFailures, duplicatesSuppressed, callMs };
   } catch (err) {
-    return { ok: false, error: 'WhatsApp v1 gateway health check failed: ' + err.message };
+    // A thrown status/health call (network error, 503, the 10s
+    // AbortController timeout firing) - same "never alarm on a single
+    // transient blip" treatment as a confirmed bad status above.
+    const callMs = Date.now() - callStartedAt;
+    const count = await bumpGatewayV1BadCount();
+    if (count < GATEWAY_V1_CONFIRM_THRESHOLD) {
+      return { ok: true, callMs, note: 'status/health check failed (' + err.message + ') after ' + callMs + 'ms, within confirm window (' + count + '/' + GATEWAY_V1_CONFIRM_THRESHOLD + ')' };
+    }
+    return { ok: false, error: 'WhatsApp v1 gateway health check failed: ' + err.message + ' (after ' + callMs + 'ms)', callMs };
   }
 }
 
@@ -482,13 +574,44 @@ async function sendAlert(failureLines) {
   return result;
 }
 
-// In-memory only, on purpose (see the module comment above) - resets on
-// a restart, which just means one fresh alert after a deploy, never a
-// problem. Re-alerts at most once every 30 minutes while a failure
-// persists, instead of every single 2-minute tick.
+// Durable in KV (2026-11-24, direct instruction - see the module comment
+// above for why this changed from in-memory). Re-alerts at most once
+// every 30 minutes while a failure persists, instead of every single
+// 2-minute tick - and now that "while a failure persists" genuinely
+// means persists, not "since this particular process happened to start."
 const RE_ALERT_INTERVAL_MS = 30 * 60 * 1000;
-let lastAlertSentAt = 0;
-let wasFailingLastTick = false;
+const HEALTH_ALERT_DEBOUNCE_KEY = 'wa-health-alert-debounce-state';
+// In-memory fallback (2026-11-24) - kept alongside the durable KV copy,
+// never instead of it: when KV itself is unreachable (its own separate
+// failure, already its own entry in `failures` via checkKv()), debounce
+// still needs to work WITHIN this one process's own lifetime exactly as
+// it always did, rather than failing open to "re-alert every tick"
+// purely because the state couldn't be read back - that would turn a
+// transient/total KV outage into its own alert storm. KV is still the
+// PRIMARY copy (read first, always written) - this is what actually
+// fixes the reported incident (debounce surviving an app restart, which
+// resets any in-memory value but never the KV one).
+let lastAlertSentAtMemory = 0;
+let wasFailingLastTickMemory = false;
+async function getAlertDebounceState() {
+  const redis = getRawRedisClient();
+  if (!redis) return { lastAlertSentAt: lastAlertSentAtMemory, wasFailingLastTick: wasFailingLastTickMemory };
+  try {
+    const raw = await redis.get(HEALTH_ALERT_DEBOUNCE_KEY);
+    if (!raw) return { lastAlertSentAt: 0, wasFailingLastTick: false };
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return { lastAlertSentAt: Number(parsed.lastAlertSentAt) || 0, wasFailingLastTick: Boolean(parsed.wasFailingLastTick) };
+  } catch (err) {
+    return { lastAlertSentAt: lastAlertSentAtMemory, wasFailingLastTick: wasFailingLastTickMemory };
+  }
+}
+async function setAlertDebounceState(state) {
+  lastAlertSentAtMemory = state.lastAlertSentAt;
+  wasFailingLastTickMemory = state.wasFailingLastTick;
+  const redis = getRawRedisClient();
+  if (!redis) return;
+  try { await redis.set(HEALTH_ALERT_DEBOUNCE_KEY, JSON.stringify(state)); } catch (err) { /* best effort */ }
+}
 
 async function runHealthCheck() {
   const [kv, gateway, replyPipeline, schedulerHeartbeat, sendFlushHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, gatewayV1Session] = await Promise.all([
@@ -509,6 +632,7 @@ async function runHealthCheck() {
   latestGatewayV1Session = gatewayV1Session;
   const isFailing = failures.length > 0;
   const now = Date.now();
+  const debounce = await getAlertDebounceState();
 
   if (isFailing) {
     // Best-effort - may itself fail to write if KV specifically is the
@@ -518,7 +642,7 @@ async function runHealthCheck() {
       const whatsappAssistant = require('./whatsappAssistant');
       await withTimeout(whatsappAssistant.setSystemHealthAlert({ failures }), HEALTH_CHECK_TIMEOUT_MS);
     } catch (err) { /* best effort */ }
-  } else if (wasFailingLastTick) {
+  } else if (debounce.wasFailingLastTick) {
     try {
       const whatsappAssistant = require('./whatsappAssistant');
       await withTimeout(whatsappAssistant.clearSystemHealthAlert(), HEALTH_CHECK_TIMEOUT_MS);
@@ -526,17 +650,19 @@ async function runHealthCheck() {
   }
 
   let alertSent = false;
-  if (isFailing && (!wasFailingLastTick || now - lastAlertSentAt > RE_ALERT_INTERVAL_MS)) {
+  if (isFailing && (!debounce.wasFailingLastTick || now - debounce.lastAlertSentAt > RE_ALERT_INTERVAL_MS)) {
     await sendAlert(failures).catch(() => {});
-    lastAlertSentAt = now;
+    debounce.lastAlertSentAt = now;
     alertSent = true;
   }
-  wasFailingLastTick = isFailing;
+  debounce.wasFailingLastTick = isFailing;
+  await setAlertDebounceState(debounce);
 
   return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, sendFlushHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, gatewayV1Session, alertSent };
 }
 
 module.exports = {
   runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat, checkSendFlushHeartbeat, checkFailedSends,
-  checkKvLatency, checkEventLoopLag, checkAiFallbackStreak, checkGatewayV1Session, getLatestGatewayV1Session, startMetricsLog, getLatestMetrics, recordKvLatency, kvLatencyP95Ms
+  checkKvLatency, checkEventLoopLag, checkAiFallbackStreak, checkGatewayV1Session, getLatestGatewayV1Session, startMetricsLog, getLatestMetrics, recordKvLatency, kvLatencyP95Ms,
+  getAlertDebounceState, setAlertDebounceState
 };

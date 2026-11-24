@@ -187,9 +187,8 @@ Failed checks:
 ```
 
 ## check-whatsapp-engine.js
-Flaked on 2026-11-23T11:19:34.734Z - failed once, passed on a lone solo retry.
+Flaked on 2026-11-24T06:00:28.143Z - failed once, passed on a lone solo retry.
 ```
-[ok] LIVE INCIDENT (2026-11), direct instruction, point 3 - a genuinely new/unrelated message arriving during the "awaiting_manager_informed" step (the live-cited "Ami kal 2nd half a asbo na") used to always get the dead-end HR_FLOW_CONTEXT_CLARIFY line and never create its own card; this step now shares the same handleUnclearFlowReply/handleUnresolvedPersonReference fallthrough its sibling step (awaiting_approval_obtained) already had - returns null (never cleared, falls through to start its own new flow) instead of swallowing the message
 [ok] cleanup (point 3 test)
 ======================================================================
 confirmOrRecoverSend/processDueDeliveryChecks - ROBUSTNESS PASS: auto-recovery, late-confirmation dedup, evidence log, dual-channel alert - DATA-DRIVEN (no background timers at all, so a test can never leak a stray one into a later, unrelated test)
@@ -222,9 +221,10 @@ queryDeliveryEvidence/countNotDeliveredToday/listDeliveryEvidenceForExport - Del
 [ok] queryDeliveryEvidence: pagination (offset/limit/hasMore) actually slices the filtered list, never the whole day
 [ok] countNotDeliveredToday reflects the SAME not_delivered count queryDeliveryEvidence itself reports for today
 [ok] listDeliveryEvidenceForExport: date-range filtering excludes a record scheduled outside the range, and the row shape carries every field IT needs
-980/981 passed, 1 FAILED
+985/987 passed, 2 FAILED
 Failed checks:
  - own name, THIRD PERSON ("Ayan Biswas er Aadhaar number ta dao" - sender IS Ayan Biswas) is treated the same as "amar" - sent DIRECTLY, never left pending (TIMED OUT after 15s)
+ - own Aadhaar, but this number is on the owner's OWN "never-auto" list -> the never-auto list still wins, approval card created and left pending (never silently auto-sent anyway)
 Skipped 157 real-model tests (run with RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TEST set)
 Real API calls: 0 · cost $0.0000
 ======================================================================

@@ -273,10 +273,58 @@ function isAvailable() { return Boolean(getClient()); }
 // next time on error - so letting a genuine error propagate here (instead
 // of swallowing it into a falsely-safe-looking 0) is what makes that
 // existing protection actually work.
+// LIVE INCIDENT (2026-11-24), ROOT CAUSE, direct instruction - "28
+// rawIncomingSeen, 0 checked, every tick, forever." The new gateway's own
+// local feed (whatsappGatewayV1Feed.js) assigns its OWN, independently-
+// counting id sequence (wa-v1-feed-id-counter, starting at 1) - a
+// completely DIFFERENT numbering space from the old gateway's own
+// message ids, which reached into the hundreds of thousands after months
+// of real production use. wa-last-seen:<contact> was a single, UNSCOPED
+// key shared by both - every contact who ever messaged under the old
+// gateway had this set to a huge old-gateway id, which a small new
+// feed id (e.g. 28, 29, 30...) can mathematically never exceed -
+// `m.id > lastSeenId` silently excluded every single incoming message,
+// for every contact with old-gateway history, forever. Scoping this key
+// per gateway keeps the two numbering spaces from ever colliding again:
+// gateway=old reads/writes the exact same key as always (zero change for
+// it); gateway=new gets its own key, starting genuinely fresh (0) the
+// first time each contact is seen under the new gateway's own id space.
+function lastSeenKey(contactId) {
+  return gatewayModeV1.isNewGatewayEnabled() ? ('wa-v1-last-seen:' + contactId) : (LAST_SEEN_PREFIX + contactId);
+}
+
+// LIVE INCIDENT (2026-11-24), direct instruction - "log, per skipped
+// message, the reason (masked number + reason) so it's visible on the
+// System health card" (no server log access). Bounded, durable - a
+// pure visibility layer, never changes what actually gets skipped.
+const POLL_SKIP_LOG_KEY = 'wa-poll-skip-log';
+const POLL_SKIP_LOG_CAP = 50;
+function maskContactForLog(contactId) {
+  const s = String(contactId || '');
+  if (!s) return '(none)';
+  if (s.length <= 4) return '*'.repeat(s.length);
+  return s.slice(0, 2) + '*'.repeat(Math.max(1, s.length - 6)) + s.slice(-4);
+}
+async function recordPollSkip(contactId, reason, detail) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.lpush(POLL_SKIP_LOG_KEY, JSON.stringify({ at: Date.now(), contact: maskContactForLog(contactId), reason, detail: detail || null }));
+    await redis.ltrim(POLL_SKIP_LOG_KEY, 0, POLL_SKIP_LOG_CAP - 1);
+  } catch (err) { /* best effort */ }
+}
+async function listRecentPollSkips(limit) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raw = await redis.lrange(POLL_SKIP_LOG_KEY, 0, (limit || 20) - 1);
+    return (raw || []).map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean);
+  } catch (err) { return []; }
+}
 async function getLastSeenId(contactId) {
   const redis = getClient();
   if (!redis) return 0;
-  const v = await redis.get(LAST_SEEN_PREFIX + contactId);
+  const v = await redis.get(lastSeenKey(contactId));
   return Number(v) || 0;
 }
 
@@ -295,7 +343,7 @@ async function setLastSeenId(contactId, id) {
   const redis = getClient();
   if (!redis) return;
   await redisHealth.guardedWrite(async () => {
-    await redis.set(LAST_SEEN_PREFIX + contactId, String(id));
+    await redis.set(lastSeenKey(contactId), String(id));
     await redis.sadd(KNOWN_CONTACTS_KEY, contactId);
   });
 }
@@ -16766,9 +16814,24 @@ async function pollOnce() {
       // closes the same bug class regardless of which exact mechanism
       // resurfaced the id.
       const candidateIncoming = messages.filter((m) => m.id > lastSeenId).sort((a, b) => a.id - b.id);
+      // LIVE INCIDENT (2026-11-24), direct instruction - visibility into
+      // the exact bug class just fixed (lastSeenId stuck past every real
+      // message's own id): one SUMMARY entry per contact per tick (never
+      // one per excluded message - these messages are, by definition, the
+      // ENTIRE feed window every single tick, so per-message logging here
+      // would be pure noise at volume) whenever this filter excludes
+      // anything at all.
+      if (messages.length > candidateIncoming.length) {
+        const excludedCount = messages.length - candidateIncoming.length;
+        const newestExcludedId = Math.max(...messages.filter((m) => m.id <= lastSeenId).map((m) => m.id));
+        recordPollSkip(contactId, 'id<=lastSeen', excludedCount + ' message(s) at/under cursor (lastSeenId=' + lastSeenId + ', newest excluded id=' + newestExcludedId + ')').catch(() => {});
+      }
       const newIncoming = [];
       for (const m of candidateIncoming) {
-        if (await isMessageHandled(contactId, m.id)) continue;
+        if (await isMessageHandled(contactId, m.id)) {
+          recordPollSkip(contactId, 'already-handled-by-id', 'id ' + m.id).catch(() => {});
+          continue;
+        }
         // Task 1 NEW EVIDENCE (2026-10-29) - a NEW id alone doesn't mean a
         // genuinely new message; the gateway can re-deliver an old one
         // under a fresh id (see messageContentKey's own comment). Caught
@@ -16781,6 +16844,7 @@ async function pollOnce() {
           await markMessageHandled(contactId, m.id, mText);
           console.warn('[whatsapp] gateway re-delivered an old message under a new id - contact ' + contactId + ', id ' + m.id + ', original ts ' + m.created_at);
           await postOwnerNotification('⚠️ WhatsApp gateway re-delivered an old message (contact ' + contactId + ') under a new id - no reply sent, already handled. If this keeps happening, tell IT.').catch(() => {});
+          recordPollSkip(contactId, 'already-handled-by-content', 'id ' + m.id + ', original ts ' + m.created_at).catch(() => {});
           continue;
         }
         newIncoming.push(m);
@@ -17698,6 +17762,7 @@ module.exports = {
   listKnownContacts,
   getLastSeenId,
   setLastSeenId,
+  listRecentPollSkips,
   fetchAllMessagesForCatchup,
   hasManualReplyAfter,
   catchUpAfterGap,

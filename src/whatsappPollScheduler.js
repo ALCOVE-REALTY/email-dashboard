@@ -696,6 +696,18 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   const healthCheckInterval = setIntervalFn(async () => {
     if (healthChecking) return;
     healthChecking = true;
+    // LIVE INCIDENT (2026-11-24) - the repeating false-alert cadence
+    // (~3 min) lined up closely with the restart pattern, raising the
+    // question of whether this tick itself was somehow involved. No
+    // direct process.exit tied to it was found anywhere in this codebase
+    // (confirmed by a full grep), but this breadcrumb removes the
+    // remaining doubt either way: if a future crash's "last activity"
+    // ever reads "health-check-tick-start", that's the confirmation this
+    // tick really is implicated; a crash with a stale/absent breadcrumb
+    // here points elsewhere instead. Cheap - this tick runs once every 2
+    // minutes, nowhere near the quota-pressure territory a per-second
+    // write would be.
+    whatsappAssistant.recordActivityBreadcrumb('health-check-tick-start').catch(() => {});
     try {
       const result = await systemHealthMonitor.runHealthCheck();
       if (!result.ok) log.error('[whatsapp-assistant] HEALTH CHECK FAILED: ' + result.failures.join(' | ') + (result.alertSent ? ' (alert sent)' : ' (already alerted recently)'));

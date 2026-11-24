@@ -86,12 +86,29 @@ async function sendPresence(phone, state) {
 // those checks harmlessly, so returning one here (built from the new
 // gateway's own documented status values) keeps checkGateway() working
 // unchanged for both gateways without needing its own new-gateway branch.
+//
+// LIVE INCIDENT (2026-11-24), ROOT CAUSE - this used to check
+// `status.connected === false` as its OWN independent veto, BEFORE even
+// looking at `status.status` - so a real "active" session with a
+// momentary connected:false blip (this function runs on the FAST ~5s
+// poll tick, via checkGatewayConnection - a genuinely transient flicker
+// is expected here far more than on the slower 2-minute health check)
+// was reported as fully "disconnected", feeding checkGatewayConnection's
+// own 3-consecutive-bad-checks confirm threshold within ~15 seconds -
+// a real, repeating false disconnect. Now uses the one shared
+// interpretNumberStatus (see its own comment in whatsappGatewayV1.js) -
+// "active" is unconditionally connected regardless of what `connected`
+// says that instant. A transient "linking" state is deliberately NOT
+// treated as disconnected here either - this fast tick's own 3-check
+// confirm window (~15s) is far too tight for how long a normal reconnect
+// can legitimately take; systemHealthMonitor.js's own slower, dedicated
+// check is where a "linking" that persists for several real minutes
+// actually gets flagged (see checkGatewayV1Session's own comment).
 async function getConnectionStatus() {
   if (!gatewayMode.isNewGatewayEnabled()) return whatsapp.getConnectionStatus();
   const status = await gatewayV1.getNumberStatus();
-  if (status && status.connected === false) return 'disconnected';
-  if (status && (status.status === 'relink_required' || status.status === 'disabled')) return 'disconnected';
-  return 'connected';
+  const interpreted = gatewayV1.interpretNumberStatus(status);
+  return interpreted.level === 'bad' ? 'disconnected' : 'connected';
 }
 
 // listMessages(contactId, limit) -> old shape: a flat array of

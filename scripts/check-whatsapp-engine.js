@@ -7466,6 +7466,72 @@ async function checkAsyncRealModel(label, fn) {
       await cleanupCatchupFixtures(REDELIVERY_PHONE2);
     }
   });
+
+  console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11-24), ROOT CAUSE, direct instruction - "rawIncomingSeen:28, checked:0, every tick, forever" - the new gateway\'s own feed assigns an independent, freshly-counting id sequence, a COMPLETELY different numbering space from the old gateway\'s own (much larger) message ids. wa-last-seen was a single, unscoped key shared by both.');
+  console.log('='.repeat(70));
+  await checkAsync('getLastSeenId/setLastSeenId: with gateway=old (default), reads/writes the EXACT same key as always - zero behavior change for the retired gateway', async () => {
+    const phone = '910000000990';
+    const saved = process.env.WHATSAPP_GATEWAY;
+    delete process.env.WHATSAPP_GATEWAY;
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    try {
+      await whatsappAssistant.setLastSeenId(phone, 12345);
+      const raw = await redis.get('wa-last-seen:' + phone);
+      return Number(raw) === 12345 && (await whatsappAssistant.getLastSeenId(phone)) === 12345;
+    } finally {
+      if (saved === undefined) delete process.env.WHATSAPP_GATEWAY; else process.env.WHATSAPP_GATEWAY = saved;
+      await redis.del('wa-last-seen:' + phone).catch(() => {});
+    }
+  });
+  await checkAsync('THE EXACT LIVE BUG, reproduced and confirmed fixed: a contact with a HUGE old-gateway last-seen id (simulating real production history) does NOT block a small new-gateway feed id from being seen as new - gateway=new reads/writes its OWN separate key, never colliding with the old one', async () => {
+    const phone = '910000000991';
+    const saved = process.env.WHATSAPP_GATEWAY;
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    try {
+      delete process.env.WHATSAPP_GATEWAY;
+      await whatsappAssistant.setLastSeenId(phone, 788757); // old-gateway-era history, exactly the shape of the real live incident
+      process.env.WHATSAPP_GATEWAY = 'new';
+      // THE BUG, if still present: this would read the OLD 788757 value
+      // and treat every new-gateway id (e.g. 28) as already-seen forever.
+      const newGatewayLastSeen = await whatsappAssistant.getLastSeenId(phone);
+      await whatsappAssistant.setLastSeenId(phone, 5);
+      const oldGatewayStillIntact = Number(await redis.get('wa-last-seen:' + phone));
+      const newGatewayKeyValue = Number(await redis.get('wa-v1-last-seen:' + phone));
+      return newGatewayLastSeen === 0 && oldGatewayStillIntact === 788757 && newGatewayKeyValue === 5;
+    } finally {
+      if (saved === undefined) delete process.env.WHATSAPP_GATEWAY; else process.env.WHATSAPP_GATEWAY = saved;
+      await redis.del('wa-last-seen:' + phone).catch(() => {});
+      await redis.del('wa-v1-last-seen:' + phone).catch(() => {});
+    }
+  });
+  await checkAsync('END-TO-END, via pollOnce itself: a feed entry with a small new-gateway id, for a contact whose OLD last-seen was huge, is now correctly checked (not silently excluded) - the exact "checked:0" symptom, reproduced and confirmed fixed', async () => {
+    const phone = '910000000992';
+    const saved = process.env.WHATSAPP_GATEWAY;
+    const facade = require('../src/whatsappGatewayFacade');
+    const originalFacadeListMessages = facade.listMessages;
+    try {
+      delete process.env.WHATSAPP_GATEWAY;
+      await whatsappAssistant.setLastSeenId(phone, 788757);
+      process.env.WHATSAPP_GATEWAY = 'new';
+      facade.listMessages = async (contactId, limit) => (contactId === null
+        ? [{ id: 28, direction: 'incoming', type: 'text', content: { text: 'ki obostha?' }, created_at: new Date().toISOString(), recipient: phone }]
+        : []);
+      const result = await whatsappAssistant.pollOnce();
+      return result.rawIncomingSeen === 1 && result.checked === 1;
+    } finally {
+      facade.listMessages = originalFacadeListMessages;
+      if (saved === undefined) delete process.env.WHATSAPP_GATEWAY; else process.env.WHATSAPP_GATEWAY = saved;
+      const { Redis } = require('@upstash/redis');
+      const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+      await redis.del('wa-last-seen:' + phone).catch(() => {});
+      await redis.del('wa-v1-last-seen:' + phone).catch(() => {});
+      await cleanupCatchupFixtures(phone).catch(() => {});
+    }
+  });
+
   check('isStaleRepeatedMessage is wired into actOnOfficialTurn (the real-time auto-reply path), checked AFTER isDuplicateIncoming/isBotLoopPattern and BEFORE the message is ever handed to decideAutoReply - source-level, and explicitly scoped OUT of catch-up/actOnCatchupTurn per direct instruction ("catch-up... unaffected")', (() => {
     const fs = require('fs');
     const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');

@@ -3221,6 +3221,11 @@ router.get('/hr-assistant/system-health', async (req, res) => {
   // try/catch, same "one failing section can never blank the rest" rule
   // as gatewayV1Diagnostics below.
   const recentShutdowns = await whatsappAssistant.listRecentShutdowns(5).catch(() => []);
+  // LIVE INCIDENT (2026-11-24), direct instruction - "log, per skipped
+  // message, the reason (masked number + reason) so it's visible on the
+  // System health card." Own independent try/catch, same posture as
+  // every other diagnostic read on this route.
+  const recentPollSkips = await whatsappAssistant.listRecentPollSkips(10).catch(() => []);
   // New WhatsApp gateway (2026-11, direct instruction, Commit 3) - a true
   // no-op object when WHATSAPP_GATEWAY isn't "new" (gatewaySession stays
   // null, webhookRegistered stays false), same "viewing the card never
@@ -3245,7 +3250,7 @@ router.get('/hr-assistant/system-health', async (req, res) => {
     webhookUrl: webhookRegistration ? webhookRegistration.url : null,
     diagnostics: gatewayV1Diagnostics
   };
-  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, recentShutdowns, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats(), gatewayV1: gatewayV1Info });
+  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, recentShutdowns, recentPollSkips, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats(), gatewayV1: gatewayV1Info });
 });
 
 // Part B phase 3 (2026-11, direct instruction), LIVE BUG FIX (2026-11) -

@@ -295,7 +295,19 @@ async function main() {
       capPipeline.ltrim('wa-v1-feed-global', 0, 999);
       capPipeline.expire('wa-v1-feed-global', 90 * 24 * 60 * 60);
       for (const key of touchedContactKeys) { capPipeline.ltrim(key, 0, 199); capPipeline.expire(key, 90 * 24 * 60 * 60); }
-      for (const [contact, maxId] of maxIdPerContact) { capPipeline.set('wa-last-seen:' + contact, String(maxId)); }
+      // Seed BOTH the old-gateway and new-gateway-scoped last-seen keys to
+      // the same already-caught-up value. LIVE INCIDENT (2026-11-24) fix:
+      // these are now two genuinely separate keys (wa-last-seen:<contact>
+      // vs wa-v1-last-seen:<contact>) so a real deployment running
+      // gateway=new only ever advances the new-scoped one - seeding only
+      // the old key here (as this test used to) would make pollOnce()
+      // below see all 20,500 seeded messages as a fresh, unprocessed
+      // backlog under the new gateway, which is exactly the real bug this
+      // fix addresses, not a performance problem to measure.
+      for (const [contact, maxId] of maxIdPerContact) {
+        capPipeline.set('wa-last-seen:' + contact, String(maxId));
+        capPipeline.set('wa-v1-last-seen:' + contact, String(maxId));
+      }
       await capPipeline.exec();
       const seedMs = Date.now() - t0;
       const globalRows = await feed.listGlobalFeed(5000); // ask for far more than the cap

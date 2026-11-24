@@ -568,12 +568,20 @@ async function pollEvents() {
   const limit = pollEventsBatchLimit();
   let after = isColdStart ? null : cursor;
   let totalKept = 0, totalSeen = 0;
+  // LIVE INCIDENT (2026-11-24), direct instruction - "log gateway
+  // response times; if the gateway itself is slow, tell me so I can ask
+  // IT." The only way to tell "our own 10s safety breaker fired because
+  // the gateway took too long" apart from "something on our side hung"
+  // is to measure and record the REAL round-trip time every call, not
+  // just log the timeout/error when it happens.
+  const fetchStartedAt = Date.now();
   try {
     const url = isColdStart
       ? base + '/v1/numbers/' + numberId + '/events?since=' + encodeURIComponent(new Date().toISOString()) + '&limit=' + limit
       : base + '/v1/numbers/' + numberId + '/events?after=' + encodeURIComponent(after) + '&limit=' + limit;
     const res = await fetch(url, { headers: gatewayV1.authHeaders() });
-    if (!res.ok) throw new Error('GET /v1/numbers/{id}/events failed: ' + res.status);
+    const fetchMs = Date.now() - fetchStartedAt;
+    if (!res.ok) throw new Error('GET /v1/numbers/{id}/events failed: ' + res.status + ' (' + fetchMs + 'ms)');
     const data = await res.json();
     const events = data.events || [];
     for (const evt of events) {
@@ -584,10 +592,11 @@ async function pollEvents() {
     after = data.nextAfter != null ? data.nextAfter : after;
     await saveEventsCursor(after);
     const hasMore = Boolean(data.hasMore);
-    await recordPollDiagnostics({ ok: true, pages: 1, totalSeen, totalKept, cursor: after, hasMore, coldStart: isColdStart, error: null });
-    return { ok: true, pages: 1, totalSeen, totalKept, cursor: after, hasMore, coldStart: isColdStart };
+    await recordPollDiagnostics({ ok: true, pages: 1, totalSeen, totalKept, cursor: after, hasMore, coldStart: isColdStart, fetchMs, error: null });
+    return { ok: true, pages: 1, totalSeen, totalKept, cursor: after, hasMore, coldStart: isColdStart, fetchMs };
   } catch (err) {
-    await recordPollDiagnostics({ ok: false, pages: 0, totalSeen, totalKept, cursor: after, error: err.message });
+    const fetchMs = Date.now() - fetchStartedAt;
+    await recordPollDiagnostics({ ok: false, pages: 0, totalSeen, totalKept, cursor: after, fetchMs, error: err.message + ' (after ' + fetchMs + 'ms)' });
     throw err;
   }
 }

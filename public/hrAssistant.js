@@ -290,6 +290,7 @@
   const healthRestartsEl = document.getElementById('hrHealthRestarts');
   const healthProcessLineEl = document.getElementById('hrHealthProcessLine');
   const healthRecentShutdownsEl = document.getElementById('hrHealthRecentShutdowns');
+  const healthPollSkipsEl = document.getElementById('hrHealthPollSkips');
   const jobHeartbeatsList = document.getElementById('hrJobHeartbeatsList');
   const healthWaV1El = document.getElementById('hrHealthWaV1');
   const healthWaV1StatusEl = document.getElementById('hrHealthWaV1Status');
@@ -5555,6 +5556,16 @@
     if (!recentShutdowns || !recentShutdowns.length) { healthRecentShutdownsEl.textContent = ''; return; }
     healthRecentShutdownsEl.textContent = 'Recent restarts:\n' + recentShutdowns.map(shutdownEntryLine).join('\n');
   }
+  // LIVE INCIDENT (2026-11-24), direct instruction - "log, per skipped
+  // incoming message, the reason (masked number + reason) so it's
+  // visible on the System health card" - no server log access, so this
+  // is the one place to actually see why a message never got a reply.
+  function renderRecentPollSkips(recentPollSkips) {
+    if (!healthPollSkipsEl) return;
+    if (!recentPollSkips || !recentPollSkips.length) { healthPollSkipsEl.textContent = ''; return; }
+    const lines = recentPollSkips.map((s) => ageLabelOrDash(s.at) + ' — ' + s.contact + ' — ' + s.reason + (s.detail ? ' (' + s.detail + ')' : ''));
+    healthPollSkipsEl.textContent = 'Recent skipped incoming messages:\n' + lines.join('\n');
+  }
   // New WhatsApp gateway (2026-11, direct instruction, Commit 3; extended
   // 2026-11-23, LIVE INCIDENT, direct instruction - "Gateway diagnostics"
   // block). Shown whenever there is ANY sign the new gateway is
@@ -5606,6 +5617,7 @@
       const m = data && data.metrics;
       try { renderProcessStart(data && data.processStart); } catch (err) { /* independent of the rest */ }
       try { renderRecentShutdowns(data && data.recentShutdowns); } catch (err) { /* independent of the rest */ }
+      try { renderRecentPollSkips(data && data.recentPollSkips); } catch (err) { /* independent of the rest */ }
       try { renderJobHeartbeatsList(data && data.jobHeartbeats); } catch (err) { /* independent of the rest */ }
       // LIVE INCIDENT (2026-11-23) - moved AFTER the core metrics render
       // below (was before) and wrapped here too, on top of its own

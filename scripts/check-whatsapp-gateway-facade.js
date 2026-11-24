@@ -146,16 +146,9 @@ async function main() {
         return (await facade.getConnectionStatus()) === 'connected';
       } finally { delete process.env.WHATSAPP_GATEWAY; }
     });
-    // NOTE: systemHealthMonitor.js's checkGateway() has a pre-existing,
-    // unrelated-to-this-migration gap - it checks status.connected/
-    // status.status/status.state as OBJECT sub-fields, but
-    // whatsappService.js's own getConnectionStatus() always returns a
-    // bare STRING (confirmed by reading its source), so that check never
-    // actually fires for either gateway today. Flagged to the user
-    // separately, not fixed here (out of scope for this migration) - the
-    // new gateway's OWN disconnection alerting is unaffected, since
-    // checkGatewayV1Session() (Commit 3) reads gatewayV1.getNumberStatus()
-    // directly as a real object, never through this string-returning path.
+    // systemHealthMonitor.js's checkGateway() now correctly no-ops for the
+    // new gateway entirely (fixed 2fcbf07) - checkGatewayV1Session() is
+    // the real, dedicated check for that case.
     await checkAsync('new gateway, status "relink_required": the facade itself still correctly translates this into "disconnected"', async () => {
       process.env.WHATSAPP_GATEWAY = 'new';
       gatewayV1.getNumberStatus = async () => ({ status: 'relink_required', connected: false });
@@ -163,11 +156,34 @@ async function main() {
         return (await facade.getConnectionStatus()) === 'disconnected';
       } finally { delete process.env.WHATSAPP_GATEWAY; }
     });
-    await checkAsync('new gateway, connected:false explicitly: returns "disconnected" even if status itself looks otherwise ok', async () => {
+    await checkAsync('new gateway, status "disabled": also translates to "disconnected"', async () => {
+      process.env.WHATSAPP_GATEWAY = 'new';
+      gatewayV1.getNumberStatus = async () => ({ status: 'disabled', connected: false });
+      try {
+        return (await facade.getConnectionStatus()) === 'disconnected';
+      } finally { delete process.env.WHATSAPP_GATEWAY; }
+    });
+    // LIVE INCIDENT (2026-11-24), ROOT CAUSE, direct instruction - this
+    // used to assert the OLD, BUGGY behavior ("connected:false always
+    // wins, even over an otherwise-healthy status") - that was the exact
+    // live bug (a real "status: active" session was reported disconnected
+    // purely because connected read false in that one instant, feeding a
+    // false "disconnected since" banner off the FAST ~5s poll tick). Per
+    // IT's own documentation, "active" is unconditionally the healthy
+    // status - `connected` is informational only here now, never an
+    // independent veto.
+    await checkAsync('new gateway, status "active" with a momentary connected:false blip: still returns "connected" - a real re-confirmed live bug, not the old lock-in', async () => {
       process.env.WHATSAPP_GATEWAY = 'new';
       gatewayV1.getNumberStatus = async () => ({ status: 'active', connected: false });
       try {
-        return (await facade.getConnectionStatus()) === 'disconnected';
+        return (await facade.getConnectionStatus()) === 'connected';
+      } finally { delete process.env.WHATSAPP_GATEWAY; }
+    });
+    await checkAsync('new gateway, status "linking" (reconnecting): NOT treated as disconnected on this fast tick - its own ~15s confirm window is far too tight for a normal reconnect; the slower, dedicated health check is where a persisting "linking" actually gets flagged', async () => {
+      process.env.WHATSAPP_GATEWAY = 'new';
+      gatewayV1.getNumberStatus = async () => ({ status: 'linking', connected: false });
+      try {
+        return (await facade.getConnectionStatus()) === 'connected';
       } finally { delete process.env.WHATSAPP_GATEWAY; }
     });
 
