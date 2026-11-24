@@ -412,6 +412,48 @@ async function getLastReportSelection(phone) {
   } catch (err) { return null; }
 }
 
+// ---------------- Per-sender format preference (Phase 5, durable) ----------------
+// Example 2's own description - "remembers this sender prefers Excel next
+// time" - a LASTING preference (no TTL), distinct from the short-TTL
+// last-report memory above (which is for literally resending the SAME
+// report, not for a later, unrelated new request). Set only when the
+// sender EXPLICITLY names a format; consulted only when a later request
+// does NOT name one.
+const FORMAT_PREF_PREFIX = 'wa-report-format-pref:';
+async function saveFormatPreference(phone, format) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(FORMAT_PREF_PREFIX + phone, format); } catch (err) { /* best effort */ }
+}
+async function getFormatPreference(phone) {
+  const redis = getClient();
+  if (!redis) return null;
+  try { return await redis.get(FORMAT_PREF_PREFIX + phone); } catch (err) { return null; }
+}
+
+// ---------------- Reports-sent log (Phase 5, owner-facing audit trail) ----------------
+const REPORTS_SENT_LOG_KEY = 'wa-reports-sent-log';
+const REPORTS_SENT_LOG_CAP = 200;
+async function recordReportSent({ phone, name, targetLabel, groupKeys, format, rowCount, columnsLabel }) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.lpush(REPORTS_SENT_LOG_KEY, JSON.stringify({
+      at: Date.now(), phone, name: name || null, targetLabel: targetLabel || null,
+      grouped: Boolean(groupKeys && groupKeys.length), format, rowCount, columnsLabel: columnsLabel || null
+    }));
+    await redis.ltrim(REPORTS_SENT_LOG_KEY, 0, REPORTS_SENT_LOG_CAP - 1);
+  } catch (err) { /* best effort - never blocks a real send */ }
+}
+async function listReportsSentLog(limit) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raw = await redis.lrange(REPORTS_SENT_LOG_KEY, 0, (limit || 50) - 1);
+    return raw.map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (e) { return null; } }).filter(Boolean);
+  } catch (err) { return []; }
+}
+
 // ---------------- Reply text ----------------
 const GROUPED_COUNT_TOTAL_SUFFIX = {
   banglish: (n) => 'Mot ' + n + ' jon.',
@@ -599,6 +641,7 @@ async function sendOneReportDocument({ phone, name, format, target, includedColu
   if (!result.ok) return { ok: false, error: result.error || 'Unknown send error', filename };
   await wa.appendConvoHistory(phone, 'out', '[document] ' + caption).catch(() => {});
   await wa.logInboxEvent({ chatId: phone, name: name || null, isGroup: false, messageSummary: '[HR report document]', aCase: 'hr_report', sentText: '[document] ' + caption, outcome: 'sent', sentAt: Date.now(), gatewayMessageId: result.gatewayMessageId || null }).catch(() => {});
+  await recordReportSent({ phone, name, targetLabel: target.label, groupKeys, format, rowCount: target.candidates.length, columnsLabel: includedColumns.map((c) => c.label).join(', ') }).catch(() => {});
   return { ok: true, filename };
 }
 // Called (fire-and-forget) from the WhatsApp dispatcher ONLY after the
@@ -708,7 +751,17 @@ async function beginReportRequest({ phone, name, lang, text, extracted, senderEm
   // (never one combined/broken filter set); no location hint at all means
   // exactly one target with no location filter.
   const locationHints = (extracted.locations && extracted.locations.length) ? extracted.locations : [null];
-  const format = extracted.format === 'excel' ? 'excel' : 'pdf';
+  // Phase 5, direct instruction, Example 2 - a format the sender actually
+  // NAMED here is both used now AND remembered for a LATER, unrelated
+  // request that names none; only when nothing was named this time does
+  // the remembered preference (if any) apply, defaulting to pdf.
+  let format;
+  if (extracted.format === 'excel' || extracted.format === 'pdf') {
+    format = extracted.format;
+    await saveFormatPreference(phone, format);
+  } else {
+    format = (await getFormatPreference(phone)) || 'pdf';
+  }
   // Phase 4 (2026-11-24), direct instruction, Example 3 - resolved via the
   // SAME alias catalog as every other column (never trusts the model to
   // name a canonical key); an unrecognized group-by name is silently
@@ -834,6 +887,10 @@ module.exports = {
   clearPendingColumnQuestion,
   saveLastReportSelection,
   getLastReportSelection,
+  saveFormatPreference,
+  getFormatPreference,
+  recordReportSent,
+  listReportsSentLog,
   // Lower-level orchestration steps - test-only (handleHrReportRequest's
   // own deps.extract seam is the normal way to drive the full pipeline;
   // these are exposed for finer-grained unit tests of one stage alone).

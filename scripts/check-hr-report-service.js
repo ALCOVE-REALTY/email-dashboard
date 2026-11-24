@@ -414,6 +414,49 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('Phase 5 (2026-11-24, direct instruction) - durable per-sender format preference + reports-sent log');
+  console.log('='.repeat(70));
+  await checkAsync('Example 2\'s own description, "remembers this sender prefers Excel next time" - an EXPLICIT excel request is remembered, and a LATER, unrelated report that names no format defaults to Excel for this sender (never silently back to PDF)', async () => {
+    const phone = '919000000030';
+    const first = await hrReportService.handleHrReportRequest({
+      phone, name: 'Someone', lang: 'english', text: 'HR dept list in excel, Name, Designation', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'HR Dept', columns: ['Name', 'Designation'], format: 'excel', language: 'english' }) }
+    });
+    const second = await hrReportService.handleHrReportRequest({
+      phone, name: 'Someone', lang: 'english', text: 'Civil dept staff list, Name, Designation', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'Civil', columns: ['Name', 'Designation'], language: 'english' }) } // no format named this time
+    });
+    return first.pendingDocuments.format === 'excel' && second.pendingDocuments.format === 'excel';
+  });
+  await checkAsync('a sender who never named a format at all still defaults to pdf (the preference store has nothing for them)', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000031', name: 'Someone', lang: 'english', text: 'HR dept list, Name, Designation', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'HR Dept', columns: ['Name', 'Designation'], language: 'english' }) }
+    });
+    return result.pendingDocuments.format === 'pdf';
+  });
+  await checkAsync('an explicit "pdf" request from a sender who previously preferred Excel overrides the remembered preference (the sender\'s own current ask always wins)', async () => {
+    const phone = '919000000032';
+    await hrReportService.saveFormatPreference(phone, 'excel');
+    const result = await hrReportService.handleHrReportRequest({
+      phone, name: 'Someone', lang: 'english', text: 'HR dept list in pdf, Name, Designation', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'HR Dept', columns: ['Name', 'Designation'], format: 'pdf', language: 'english' }) }
+    });
+    const prefAfter = await hrReportService.getFormatPreference(phone);
+    return result.pendingDocuments.format === 'pdf' && prefAfter === 'pdf';
+  });
+  await checkAsync('recordReportSent/listReportsSentLog - a real (non-draft, non-failed) document send is logged with sender/target/format/row count/columns, most recent first', async () => {
+    const marker = 'TEST-PHASE5-LOG-' + Date.now();
+    await hrReportService.recordReportSent({ phone: '919000000033', name: 'Someone', targetLabel: marker, groupKeys: [], format: 'pdf', rowCount: 1, columnsLabel: 'Name' });
+    const log = await hrReportService.listReportsSentLog(10);
+    return log.length > 0 && log[0].targetLabel === marker && log[0].rowCount === 1 && log[0].format === 'pdf';
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed');
   if (fail) { console.log('Failed checks:'); failures.forEach((f) => console.log(' - ' + f)); }
   console.log('='.repeat(70));

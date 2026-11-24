@@ -15,6 +15,7 @@ const aiRateLimiter = require('./aiAssistant/rateLimiter');
 const toolCallLog = require('./aiAssistant/toolCallLog');
 const chatHistoryService = require('./chatHistoryService');
 const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
+const hrReportService = require('./aiAssistant/hrReportService');
 const whatsappPollScheduler = require('./whatsappPollScheduler');
 const attendanceRequestService = require('./aiAssistant/attendanceRequestService');
 const memoryService = require('./aiAssistant/memoryService');
@@ -3022,6 +3023,20 @@ router.get('/hr-assistant/delivery-log', async (req, res) => {
       return res.json(staleDashboardResponseOr(cacheKey, { items: [], hasMore: false, total: 0, stats: { deliveredCount: 0, notDeliveredCount: 0 } }, err));
     }
     res.json({ items: [], hasMore: false, total: 0, stats: { deliveredCount: 0, notDeliveredCount: 0 }, stale: true, error: err.message });
+  }
+});
+// HR reports Phase 5 (2026-11-24, direct instruction) - "Reports sent
+// log": a plain, owner-only read of hrReportService's own durable send
+// log (most recent first) - same gate pattern as every other owner-only
+// route in this file.
+router.get('/hr-assistant/reports-sent-log', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const limit = Number(req.query.limit) || 50;
+    const items = await hrReportService.listReportsSentLog(limit);
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 router.get('/hr-assistant/delivery-log/badge', async (req, res) => {
