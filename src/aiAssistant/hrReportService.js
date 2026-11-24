@@ -341,6 +341,7 @@ function hrReportRequestTool() {
           dojYear: { type: 'integer', description: 'The 4-digit year that goes with dojMonth (assume the current year if the sender did not say one) - omit if dojMonth is omitted.' },
           columns: { type: 'array', items: { type: 'string' }, description: 'The exact column names the sender asked for, in the order they said them (e.g. ["Emp Code","Name","DOJ"]). A single-element array ["all"] or ["sob"] if the sender said they want every column. Omit entirely (empty array) if the sender did not say which columns at all - code will then ask.' },
           format: { type: 'string', enum: ['pdf', 'excel'], description: '"excel" only if the sender explicitly asked for Excel/xlsx (e.g. "excel-e dao") - omit otherwise (code defaults to PDF).' },
+          groupBy: { type: 'array', items: { type: 'string' }, description: 'Column names to group/break the report BY, in nesting order, outermost first (e.g. ["Reporting DOER","HOD"] for "Doer-wise & HOD-wise report"). Omit entirely (empty array) for a normal flat report - most requests have no grouping at all.' },
           resendLastAsFormat: { type: 'string', enum: ['pdf', 'excel'], description: 'Set ONLY when the sender is asking to resend/convert the report(s) JUST sent in this conversation into a different file format (e.g. "Ei duto Excel e din", "PDF te abar dao") - never for a brand-new report request. Omit for anything else.' },
           language: { type: 'string', enum: ['english', 'banglish', 'hinglish'], description: 'The language/script of THIS message, for replying in the same language/script.' }
         },
@@ -412,7 +413,33 @@ async function getLastReportSelection(phone) {
 }
 
 // ---------------- Reply text ----------------
-function buildCountReplyText(targets, lang) {
+const GROUPED_COUNT_TOTAL_SUFFIX = {
+  banglish: (n) => 'Mot ' + n + ' jon.',
+  hinglish: (n) => 'Kul ' + n + ' log.',
+  english: (n) => 'Total ' + n + '.'
+};
+// Phase 4 (2026-11-24), direct instruction, Example 4's second half -
+// "ADLLP te HOD wise koto jon?" -> ONE level of per-group counts as plain
+// text, never a file. Only the FIRST groupBy key is used for a count
+// reply (a nested nested-count line would read unwieldy as plain text) -
+// a deeper groupBy is still fully honoured for an actual list/document.
+function buildGroupedCountText(target, groupKeys, lang) {
+  const groupCol = COLUMN_BY_KEY.get(groupKeys[0]);
+  const groupLabel = groupCol ? groupCol.label : groupKeys[0];
+  const counts = new Map();
+  for (const e of target.candidates) {
+    const val = groupCol ? groupCol.getValue(e) : null;
+    const key = (val === undefined || val === null || String(val).trim() === '') ? '(blank)' : String(val);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const line = Array.from(counts.entries()).map(([k, n]) => k + ' ' + n).join(' · ');
+  const prefix = (target.label ? target.label + ' — ' : '') + target.statusLabel + ' staff ' + groupLabel + '-wise: ';
+  return prefix + line + ' · ' + (GROUPED_COUNT_TOTAL_SUFFIX[lang] || GROUPED_COUNT_TOTAL_SUFFIX.english)(target.candidates.length);
+}
+function buildCountReplyText(targets, lang, groupKeys) {
+  if (groupKeys && groupKeys.length && targets.length === 1) {
+    return buildGroupedCountText(targets[0], groupKeys, lang);
+  }
   const total = targets.reduce((s, t) => s + t.candidates.length, 0);
   if (targets.length <= 1) {
     const only = targets[0] || { candidates: [], label: null };
@@ -475,16 +502,71 @@ function slugifyForFilename(raw) {
 function todayDisplayDateHuman() {
   return new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
-function reportBaseName({ targetLabel, status }) {
-  const dateForFilename = todayDisplayDateHuman().replace(/ /g, '-');
-  return [targetLabel, status, 'Staff', dateForFilename].filter(Boolean).map(slugifyForFilename).join('-');
+// Short, filename-friendly labels for the common group-by columns (e.g.
+// "Reporting DOER" -> "Doer", matching the sender's own updated Example 3
+// filename "ADLLP-Doer-HOD-wise-..." exactly) - falls back to a column's
+// own label's last word for anything not explicitly listed.
+const GROUP_FILENAME_LABEL = { reportingDoer: 'Doer', reportingManager: 'HOD', department: 'Dept', location: 'Site', company: 'Company' };
+function groupFilenameLabel(key) {
+  if (GROUP_FILENAME_LABEL[key]) return GROUP_FILENAME_LABEL[key];
+  const c = COLUMN_BY_KEY.get(key);
+  const words = (c ? c.label : key).split(/\s+/);
+  return words[words.length - 1];
 }
-function reportCaption({ targetLabel, status, count }) {
+function reportBaseName({ targetLabel, status, groupKeys }) {
+  const dateForFilename = todayDisplayDateHuman().replace(/ /g, '-');
+  const groupSegment = (groupKeys && groupKeys.length) ? groupKeys.map(groupFilenameLabel).join('-') + '-wise' : null;
+  return [targetLabel, groupSegment, status, 'Staff', dateForFilename].filter(Boolean).map(slugifyForFilename).join('-');
+}
+function reportCaption({ targetLabel, status, count, groupKeys }) {
+  if (groupKeys && groupKeys.length) {
+    const groupLabel = groupKeys.map(groupFilenameLabel).join('-wise & ') + '-wise';
+    return (targetLabel ? targetLabel + ' — ' : '') + groupLabel + ' · ' + count + ' staff';
+  }
   return (targetLabel ? targetLabel + ' — ' : '') + status + ' staff · ' + count;
 }
-async function renderReportBuffer({ title, subtitle, includedColumns, candidates, format }) {
+// Phase 4 (2026-11-24), direct instruction, Example 3 - nested grouping
+// (e.g. Doer-wise & HOD-wise), any number of levels, any order the sender
+// asked for. One {section} heading bar per group value at every level; a
+// {bold} "Count: N" row after the deepest level's own table, a {bold}
+// "Subtotal (value): N" row after every INTERMEDIATE level's children.
+// The exact same row shapes buildTablePdfBuffer/buildTableExcelBuffer
+// already both support (section/bold/plain) - zero new rendering
+// primitive needed in either file.
+function blankCellsPad(count) { return new Array(count).fill(''); }
+function buildGroupedRows(candidates, groupKeys, includedColumns) {
+  const [thisKey, ...restKeys] = groupKeys;
+  const groupCol = COLUMN_BY_KEY.get(thisKey);
+  const groupLabel = groupCol ? groupCol.label : thisKey;
+  const groups = new Map();
+  for (const e of candidates) {
+    const val = groupCol ? groupCol.getValue(e) : null;
+    const key = (val === undefined || val === null || String(val).trim() === '') ? '(blank)' : String(val);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  const rows = [];
+  for (const [val, members] of groups) {
+    rows.push({ section: groupLabel + ': ' + val });
+    if (restKeys.length) {
+      rows.push(...buildGroupedRows(members, restKeys, includedColumns));
+      rows.push({ bold: true, cells: ['Subtotal (' + val + '): ' + members.length].concat(blankCellsPad(includedColumns.length)) });
+    } else {
+      rows.push(...members.map((e, i) => [i + 1].concat(includedColumns.map((c) => c.getValue(e)))));
+      rows.push({ bold: true, cells: ['Count: ' + members.length].concat(blankCellsPad(includedColumns.length)) });
+    }
+  }
+  return rows;
+}
+async function renderReportBuffer({ title, subtitle, includedColumns, candidates, format, groupKeys }) {
   const columns = ['Sl. No.'].concat(includedColumns.map((c) => c.label));
-  const rows = candidates.map((e, i) => [i + 1].concat(includedColumns.map((c) => c.getValue(e))));
+  let rows;
+  if (groupKeys && groupKeys.length) {
+    rows = buildGroupedRows(candidates, groupKeys, includedColumns);
+    rows.push({ bold: true, cells: ['Grand total: ' + candidates.length].concat(blankCellsPad(includedColumns.length)) });
+  } else {
+    rows = candidates.map((e, i) => [i + 1].concat(includedColumns.map((c) => c.getValue(e))));
+  }
   if (format === 'excel') {
     const buffer = await tableExcelReport.buildTableExcelBuffer({ title, subtitle, columns, rows });
     return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ext: 'xlsx' };
@@ -497,18 +579,18 @@ async function renderReportBuffer({ title, subtitle, includedColumns, candidates
 // WhatsApp document for one target, draft-mode-aware, never throws (a
 // failure is always reported back as {ok:false, error}, never crashes the
 // caller's loop).
-async function sendOneReportDocument({ phone, name, format, target, includedColumns }) {
+async function sendOneReportDocument({ phone, name, format, target, includedColumns, groupKeys }) {
   const wa = getWhatsappAssistant();
   const title = target.label || 'HR Report';
   const subtitle = target.statusLabel + ' staff · ' + target.candidates.length + ' · ' + todayDisplayDateHuman();
   let rendered;
   try {
-    rendered = await renderReportBuffer({ title, subtitle, includedColumns, candidates: target.candidates, format });
+    rendered = await renderReportBuffer({ title, subtitle, includedColumns, candidates: target.candidates, format, groupKeys });
   } catch (err) {
     return { ok: false, error: 'Could not generate the file: ' + err.message };
   }
-  const filename = reportBaseName({ targetLabel: target.label, status: target.statusLabel }) + '.' + rendered.ext;
-  const caption = reportCaption({ targetLabel: target.label, status: target.statusLabel, count: target.candidates.length });
+  const filename = reportBaseName({ targetLabel: target.label, status: target.statusLabel, groupKeys }) + '.' + rendered.ext;
+  const caption = reportCaption({ targetLabel: target.label, status: target.statusLabel, count: target.candidates.length, groupKeys });
   if (!wa.isRealSendAllowedFor(phone)) {
     console.log('[hr-report] [DRAFT MODE] would send ' + filename + ' (' + target.candidates.length + ' rows) to ' + phone);
     return { ok: true, draft: true, filename };
@@ -534,7 +616,7 @@ async function deliverPendingReportDocuments(spec) {
     wa.sendWhatsAppChunked(spec.phone, REPORT_READY_INTERIM_TEXT[spec.lang] || REPORT_READY_INTERIM_TEXT.english).catch(() => {});
   }, INTERIM_WAIT_MS);
   try {
-    const outcomes = await Promise.all(spec.targets.map((t) => sendOneReportDocument({ phone: spec.phone, name: spec.name, format: spec.format, target: t, includedColumns: spec.includedColumns })));
+    const outcomes = await Promise.all(spec.targets.map((t) => sendOneReportDocument({ phone: spec.phone, name: spec.name, format: spec.format, target: t, includedColumns: spec.includedColumns, groupKeys: spec.groupKeys })));
     const failed = outcomes.filter((o) => !o.ok);
     if (failed.length) {
       await wa.postOwnerNotification('⚠️ HR report: ' + (spec.name || spec.phone) + '-ke document pathate giye error holo: ' + failed.map((o) => o.error).join('; ')).catch(() => {});
@@ -567,7 +649,7 @@ async function sendApprovedReport(approval) {
   }
   const outcomes = [];
   for (const t of targets) {
-    outcomes.push(await sendOneReportDocument({ phone: approval.phone, name: approval.name, format: spec.format, target: t, includedColumns }));
+    outcomes.push(await sendOneReportDocument({ phone: approval.phone, name: approval.name, format: spec.format, target: t, includedColumns, groupKeys: spec.groupKeys }));
   }
   const failed = outcomes.filter((o) => !o.ok);
   if (failed.length) {
@@ -602,7 +684,7 @@ async function handleHrReportRequest({ phone, name, lang, text, history, senderE
     if (last) {
       const targets = [];
       for (const filters of last.targetsFilters) targets.push(await resolveOneTargetFromFilters(filters, employees));
-      return finalizeReports({ phone, name, lang: extracted.language || last.lang || lang, columnKeys: last.columnKeys, format: extracted.resendLastAsFormat, targets, senderEmployee });
+      return finalizeReports({ phone, name, lang: extracted.language || last.lang || lang, columnKeys: last.columnKeys, format: extracted.resendLastAsFormat, groupKeys: last.groupKeys || [], targets, senderEmployee });
     }
     // No memory found (TTL expired, or nothing was ever sent this
     // session) - falls through to a normal fresh request below, using
@@ -627,6 +709,11 @@ async function beginReportRequest({ phone, name, lang, text, extracted, senderEm
   // exactly one target with no location filter.
   const locationHints = (extracted.locations && extracted.locations.length) ? extracted.locations : [null];
   const format = extracted.format === 'excel' ? 'excel' : 'pdf';
+  // Phase 4 (2026-11-24), direct instruction, Example 3 - resolved via the
+  // SAME alias catalog as every other column (never trusts the model to
+  // name a canonical key); an unrecognized group-by name is silently
+  // dropped rather than failing the whole request.
+  const groupKeys = (extracted.groupBy || []).map((g) => { const c = findColumnByAlias(g); return c ? c.key : null; }).filter(Boolean);
 
   const targets = [];
   for (const locHint of locationHints) {
@@ -635,15 +722,15 @@ async function beginReportRequest({ phone, name, lang, text, extracted, senderEm
   }
 
   if (extracted.intent === 'count') {
-    return { case: 'hr_report', replyText: buildCountReplyText(targets, lang), summaryForOwner: text.slice(0, 160) };
+    return { case: 'hr_report', replyText: buildCountReplyText(targets, lang, groupKeys), summaryForOwner: text.slice(0, 160) };
   }
 
   const { keys: columnKeys, wantsAll } = resolveModelColumns(extracted.columns);
   if (!columnKeys && !wantsAll) {
-    await savePendingColumnQuestion(phone, { targetsFilters: targets.map((t) => t.filters), format, lang });
+    await savePendingColumnQuestion(phone, { targetsFilters: targets.map((t) => t.filters), format, groupKeys, lang });
     return { case: 'hr_report', replyText: buildColumnQuestionText(lang), summaryForOwner: text.slice(0, 160) };
   }
-  return finalizeReports({ phone, name, lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format, targets, senderEmployee });
+  return finalizeReports({ phone, name, lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format, groupKeys, targets, senderEmployee });
 }
 
 async function continueWithColumnAnswer({ phone, name, lang, text, pending, senderEmployee, employees }) {
@@ -657,10 +744,10 @@ async function continueWithColumnAnswer({ phone, name, lang, text, pending, send
   await clearPendingColumnQuestion(phone);
   const targets = [];
   for (const filters of pending.targetsFilters) targets.push(await resolveOneTargetFromFilters(filters, employees));
-  return finalizeReports({ phone, name, lang: pending.lang || lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format: pending.format, targets, senderEmployee });
+  return finalizeReports({ phone, name, lang: pending.lang || lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format: pending.format, groupKeys: pending.groupKeys || [], targets, senderEmployee });
 }
 
-async function finalizeReports({ phone, name, lang, columnKeys, format, targets, senderEmployee }) {
+async function finalizeReports({ phone, name, lang, columnKeys, format, groupKeys, targets, senderEmployee }) {
   const { includedColumns, excludedRestrictedLabels, tierMap } = await classifyColumnsForAccess(columnKeys);
   const totalCandidates = targets.reduce((s, t) => s + t.candidates.length, 0);
   // LIVE INCIDENT (2026-11-24) - "Report ready (0 rows)" used to look like
@@ -687,12 +774,12 @@ async function finalizeReports({ phone, name, lang, columnKeys, format, targets,
       phone, name, requestText: 'HR report (' + totalCandidates + ' rows)',
       dataRequestSummary: 'HR report - ' + targets.map((t) => (t.label ? t.label + ': ' : '') + t.candidates.length).join(' · '),
       lang, preparedReplyText: previewText, preparedCard: null, preparedError: null,
-      pendingReportRender: { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), format }
+      pendingReportRender: { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), format, groupKeys }
     });
     return { case: 'hr_report', replyText: HELD_FOR_APPROVAL_TEXT[lang] || HELD_FOR_APPROVAL_TEXT.english, summaryForOwner: 'HR report held for approval - ' + totalCandidates + ' row(s)' };
   }
 
-  await saveLastReportSelection(phone, { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), lang, format });
+  await saveLastReportSelection(phone, { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), lang, format, groupKeys });
 
   // No separate text reply for the fast path - the document(s) + caption
   // ARE the reply (matches the sender's own updated Example 1 exactly) -
@@ -708,7 +795,7 @@ async function finalizeReports({ phone, name, lang, columnKeys, format, targets,
     replyText,
     summaryForOwner: 'HR report - ' + totalCandidates + ' row(s) across ' + targets.length + ' target(s)',
     pendingDocuments: {
-      phone, name, lang, format,
+      phone, name, lang, format, groupKeys,
       targets: targets.map((t) => ({ label: t.label, statusLabel: t.statusLabel, candidates: t.candidates })),
       includedColumns
     }
@@ -734,6 +821,9 @@ module.exports = {
   resolveCompanyFilter,
   resolveOneTargetFromFilters,
   siteDisplayLabel,
+  buildGroupedRows,
+  reportBaseName,
+  reportCaption,
   buildColumnQuestionText,
   buildCountReplyText,
   buildReportPreviewText,

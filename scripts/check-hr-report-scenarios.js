@@ -82,6 +82,12 @@ async function main() {
       check: (r) => r && r.matchesReportIntent === true && r.resendLastAsFormat === 'excel'
     },
     {
+      name: 'Phase 4 (2026-11-24) - "Doer-wise & HOD-wise report" -> groupBy array, outermost first',
+      text: 'ADLLP er Doer wise & HOD wise report din',
+      check: (r) => r && r.matchesReportIntent === true && has(r.company, 'adllp') && Array.isArray(r.groupBy) && r.groupBy.length === 2 &&
+        has(r.groupBy[0], 'doer') && has(r.groupBy[1], 'hod')
+    },
+    {
       name: 'English list with filter + columns combined',
       text: 'List of active engineers in ADLLP with Name and DOJ',
       check: (r) => r && r.matchesReportIntent === true && r.intent === 'list' && has(r.designation, 'engineer') && has(r.company, 'adllp') &&

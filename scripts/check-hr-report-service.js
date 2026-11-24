@@ -368,6 +368,52 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('Phase 4 (2026-11-24, direct instruction) - nested grouped reports (Example 3: "Doer-wise & HOD-wise")');
+  console.log('='.repeat(70));
+  const GROUPED_EMPLOYEES = [
+    { employeeId: 'G001', name: 'A1', designation: 'Engineer', department: 'Civil', location: 'Site1', company: 'Alcove Developers LLP', reportingDoer: 'X', reportingManager: 'A', status: 'ACTIVE', doj: new Date('2024-01-01') },
+    { employeeId: 'G002', name: 'A2', designation: 'Engineer', department: 'Civil', location: 'Site1', company: 'Alcove Developers LLP', reportingDoer: 'X', reportingManager: 'A', status: 'ACTIVE', doj: new Date('2024-01-01') },
+    { employeeId: 'G003', name: 'B1', designation: 'Welder', department: 'Civil', location: 'Site1', company: 'Alcove Developers LLP', reportingDoer: 'X', reportingManager: 'B', status: 'ACTIVE', doj: new Date('2024-01-01') },
+    { employeeId: 'G004', name: 'C1', designation: 'Welder', department: 'Civil', location: 'Site1', company: 'Alcove Developers LLP', reportingDoer: 'Y', reportingManager: 'C', status: 'ACTIVE', doj: new Date('2024-01-01') }
+  ];
+  const FAKE_COLS = [hrReportService.findColumnByAlias('name')];
+  check('buildGroupedRows: one section bar per DOER, one nested section bar per HOD under it, a "Count: N" row after the deepest level, a "Subtotal (value): N" row after each intermediate level', () => {
+    const rows = hrReportService.buildGroupedRows(GROUPED_EMPLOYEES, ['reportingDoer', 'reportingManager'], FAKE_COLS);
+    const sections = rows.filter((r) => r && !Array.isArray(r) && 'section' in r).map((r) => r.section);
+    const bolds = rows.filter((r) => r && !Array.isArray(r) && r.bold).map((r) => r.cells[0]);
+    return sections.includes('Reporting DOER: X') && sections.includes('HOD: A') && sections.includes('HOD: B') && sections.includes('Reporting DOER: Y') && sections.includes('HOD: C')
+      && bolds.includes('Count: 2') && bolds.includes('Count: 1') && bolds.includes('Subtotal (X): 3') && bolds.includes('Subtotal (Y): 1');
+  });
+  check('buildGroupedRows with a SINGLE group key (no nesting) goes straight to "Count: N" after each group - no spurious subtotal level', () => {
+    const rows = hrReportService.buildGroupedRows(GROUPED_EMPLOYEES, ['reportingManager'], FAKE_COLS);
+    const bolds = rows.filter((r) => r && !Array.isArray(r) && r.bold).map((r) => r.cells[0]);
+    return bolds.includes('Count: 2') && bolds.includes('Count: 1') && !bolds.some((b) => b.startsWith('Subtotal'));
+  });
+  check('reportBaseName/reportCaption with groupKeys match the sender\'s own updated Example 3 exactly ("Doer-HOD-wise", short labels, never the full "Reporting DOER")', () => {
+    const name = hrReportService.reportBaseName({ targetLabel: 'ADLLP', status: 'Active', groupKeys: ['reportingDoer', 'reportingManager'] });
+    const caption = hrReportService.reportCaption({ targetLabel: 'ADLLP', status: 'Active', count: 43, groupKeys: ['reportingDoer', 'reportingManager'] });
+    return /^ADLLP-Doer-HOD-wise-Active-Staff-/.test(name) && caption === 'ADLLP — Doer-wise & HOD-wise · 43 staff';
+  });
+  await checkAsync('Example 3 end to end - "ADLLP er Doer wise & HOD wise report din" groups the real document by Doer then HOD, grand total correct, document still sent (no approval - all official columns)', async () => {
+    const origListCompanyDetails = companyDetailsService.listCompanyDetails;
+    companyDetailsService.listCompanyDetails = async () => [{ company: 'Alcove Developers LLP', code: 'ADLLP' }];
+    try {
+      const result = await hrReportService.handleHrReportRequest({
+        phone: '919000000020', name: 'Someone', lang: 'banglish', text: 'ADLLP er Doer wise & HOD wise report din', history: [],
+        senderEmployee: null, employees: GROUPED_EMPLOYEES,
+        deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', company: 'ADLLP', groupBy: ['Reporting DOER', 'HOD'], columns: ['Name'], language: 'banglish' }) }
+      });
+      return result && !result.replyText && Boolean(result.pendingDocuments) && JSON.stringify(result.pendingDocuments.groupKeys) === JSON.stringify(['reportingDoer', 'reportingManager'])
+        && result.pendingDocuments.targets[0].candidates.length === 4;
+    } finally { companyDetailsService.listCompanyDetails = origListCompanyDetails; }
+  });
+  check('Example 4\'s grouped-count half ("ADLLP te HOD wise koto jon?") - a count intent WITH groupBy produces a per-group text breakdown, never a file', () => {
+    const target = { label: 'ADLLP', statusLabel: 'Active', candidates: GROUPED_EMPLOYEES };
+    const text = hrReportService.buildCountReplyText([target], 'banglish', ['reportingManager']);
+    return /A 2/.test(text) && /B 1/.test(text) && /C 1/.test(text) && /Mot 4 jon/.test(text);
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed');
   if (fail) { console.log('Failed checks:'); failures.forEach((f) => console.log(' - ' + f)); }
   console.log('='.repeat(70));
