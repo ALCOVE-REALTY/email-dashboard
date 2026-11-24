@@ -85,6 +85,22 @@ async function main() {
     const r = hrReportService.resolveModelColumns([]);
     return r.keys === null && r.wantsAll === false;
   })());
+  check('LIVE INCIDENT (2026-11-24), direct instruction, reproduced exactly - "1 2,3,6" (bare space between the first two numbers, no comma) used to be read as only "3,6" (Number("1 2") is NaN) - now resolves all four', (() => {
+    const r = hrReportService.resolveColumnAnswerText('1 2,3,6', hrReportService.DEFAULT_COLUMN_KEYS);
+    return JSON.stringify(r.keys) === JSON.stringify([hrReportService.DEFAULT_COLUMN_KEYS[0], hrReportService.DEFAULT_COLUMN_KEYS[1], hrReportService.DEFAULT_COLUMN_KEYS[2], hrReportService.DEFAULT_COLUMN_KEYS[5]]);
+  })());
+  check('numbers separated by "and"/"&" also split correctly, never swallowing a multi-word alias phrase like "doer name"', (() => {
+    const r1 = hrReportService.resolveColumnAnswerText('1 and 3', hrReportService.DEFAULT_COLUMN_KEYS);
+    const r2 = hrReportService.resolveColumnAnswerText('Doer name & Name', hrReportService.DEFAULT_COLUMN_KEYS);
+    return JSON.stringify(r1.keys) === JSON.stringify([hrReportService.DEFAULT_COLUMN_KEYS[0], hrReportService.DEFAULT_COLUMN_KEYS[2]])
+      && JSON.stringify(r2.keys) === JSON.stringify(['reportingDoer', 'name']);
+  })());
+  check('DEFAULT_COLUMN_KEYS is the exact 13-column, 13-order set from the sender\'s own updated Example 1', (() => {
+    return JSON.stringify(hrReportService.DEFAULT_COLUMN_KEYS) === JSON.stringify(['employeeId', 'name', 'designation', 'department', 'groupD', 'gender', 'location', 'companyLocation', 'company', 'reportingDoer', 'doj', 'reportingManager', 'status']);
+  })());
+  check('the column question text matches the sender\'s own updated Example 1 wording exactly (banglish)', (() => {
+    return hrReportService.buildColumnQuestionText('banglish') === 'Report-e kon kon column chai? (jemon 1. Emp Code, 2. Name, 3. Designation, 4. Dept., 5. Collar Type, 6. Gender, 7. Working Location, 8. Company Location, 9. Company, 10. Reporting DOER, 11. DOJ, 12. HOD, 13. Status) — Number likhun (jemon "1,3") othoba column-er naam, likhle ei column-gulo debo.';
+  })());
 
   console.log('='.repeat(70));
   console.log('filterEmployeesForReport - pure, synchronous, status defaults to Active (direct instruction)');
@@ -199,9 +215,9 @@ async function main() {
       deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'Civil', columns: [], language: 'english' }) }
     });
     const pending = await hrReportService.getPendingColumnQuestion(phone);
-    return result && result.case === 'hr_report' && /column/i.test(result.replyText) && Boolean(pending) && pending.filters.department === 'Civil';
+    return result && result.case === 'hr_report' && /column/i.test(result.replyText) && Boolean(pending) && pending.targetsFilters[0].department === 'Civil';
   });
-  await checkAsync('...and the FOLLOW-UP "1,3" answer is picked up automatically on the NEXT call (the pending column question), producing the final report, clearing the pending state', async () => {
+  await checkAsync('...and the FOLLOW-UP "1,3" answer is picked up automatically on the NEXT call (the pending column question), producing the final report as a real document (Phase 2) - no separate text reply, clearing the pending state', async () => {
     const phone = '919999999997'; // same phone as the test just above - pending state carries over
     const result = await hrReportService.handleHrReportRequest({
       phone, name: 'Someone', lang: 'english', text: '1,3', history: [],
@@ -209,21 +225,23 @@ async function main() {
       deps: { extract: async () => { throw new Error('must never be called - a pending column question must short-circuit before any model call'); } }
     });
     const pendingAfter = await hrReportService.getPendingColumnQuestion(phone);
-    return result && result.case === 'hr_report' && /Report ready/.test(result.replyText) && !pendingAfter;
+    return result && result.case === 'hr_report' && !result.replyText && Boolean(result.pendingDocuments) && result.pendingDocuments.targets.length === 1 && !pendingAfter;
   });
-  await checkAsync('"all"/"sob" as the column answer includes every non-restricted column, never aadhar/pan/uan/esiNumber', async () => {
-    const phone = '919999999996';
+  await checkAsync('"all"/"sob" as the column answer includes every non-restricted column, never aadhar/pan/uan/esiNumber - own-data scenario so it resolves direct (not held for approval), matching the direct-send contract this checks', async () => {
+    const phone = SENDER_PHONE; // Alice (E001) - designation:'welder' + default ACTIVE matches ONLY her
+    const senderEmployee = FAKE_EMPLOYEES.find((e) => e.employeeId === 'E001');
     await hrReportService.handleHrReportRequest({
-      phone, name: 'Someone', lang: 'english', text: 'Civil dept staff list', history: [],
-      senderEmployee: null, employees: FAKE_EMPLOYEES,
-      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'Civil', columns: [], language: 'english' }) }
+      phone, name: 'Alice', lang: 'english', text: 'amar shob details dao', history: [],
+      senderEmployee, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', designation: 'welder', columns: [], language: 'english' }) }
     });
     const result = await hrReportService.handleHrReportRequest({
-      phone, name: 'Someone', lang: 'english', text: 'sob', history: [],
-      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      phone, name: 'Alice', lang: 'english', text: 'sob', history: [],
+      senderEmployee, employees: FAKE_EMPLOYEES,
       deps: { extract: async () => { throw new Error('must not be called'); } }
     });
-    return result && !/Aadhaar/.test(result.replyText) && !/PAN:/.test(result.replyText) && !/UAN/.test(result.replyText) && !/ESI/.test(result.replyText);
+    const keys = result.pendingDocuments.includedColumns.map((c) => c.key);
+    return result && !keys.includes('aadhar') && !keys.includes('pan') && !keys.includes('uan') && !keys.includes('esiNumber') && keys.includes('name') && keys.includes('contactNumber');
   });
 
   console.log('='.repeat(70));
@@ -240,7 +258,7 @@ async function main() {
       deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', designation: 'welder', columns: ['Name', 'Contact No'], language: 'english' }) }
     });
     const after = (await whatsappAssistant.listPendingApprovals()).length;
-    return result && result.case === 'hr_report' && after === before && /Contact No/.test(result.replyText);
+    return result && result.case === 'hr_report' && after === before && !result.replyText && Boolean(result.pendingDocuments) && result.pendingDocuments.includedColumns.some((c) => c.key === 'contactNumber');
   });
   await checkAsync('a report about OTHER people that includes a personal column (Contact No) is held for owner approval, never sent directly', async () => {
     const senderEmployee = FAKE_EMPLOYEES.find((e) => e.employeeId === 'E001');
@@ -262,9 +280,9 @@ async function main() {
       deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'HR Dept', columns: ['Name', 'Designation'], language: 'english' }) }
     });
     const after = (await whatsappAssistant.listPendingApprovals()).length;
-    return result && after === before && /Report ready/.test(result.replyText);
+    return result && after === before && !result.replyText && Boolean(result.pendingDocuments);
   });
-  await checkAsync('a restricted column (PAN) asked for in a report about OTHER people is excluded with a note, never held for approval just because it was asked, and never included', async () => {
+  await checkAsync('a restricted column (PAN) asked for in a report about OTHER people is excluded with a note, never held for approval just because it was asked, and never included - the document still sends for the remaining columns', async () => {
     const before = (await whatsappAssistant.listPendingApprovals()).length;
     const result = await hrReportService.handleHrReportRequest({
       phone: '919000000007', name: 'Someone Else', lang: 'english', text: 'HR dept list soho PAN dao', history: [],
@@ -272,7 +290,7 @@ async function main() {
       deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'HR Dept', columns: ['Name', 'PAN'], language: 'english' }) }
     });
     const after = (await whatsappAssistant.listPendingApprovals()).length;
-    return result && after === before && /Report ready/.test(result.replyText) && /PAN/.test(result.replyText) && /restricted/.test(result.replyText);
+    return result && after === before && Boolean(result.pendingDocuments) && /PAN/.test(result.replyText) && /restricted/.test(result.replyText);
   });
   await checkAsync('a restricted column asked for in the sender\'s OWN report is ALSO excluded (never bulk-included even for self) - the existing own-PAN/Aadhaar flow is the only way to get it', async () => {
     const senderEmployee = FAKE_EMPLOYEES.find((e) => e.employeeId === 'E004');
@@ -282,6 +300,71 @@ async function main() {
       deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'HR Dept', designation: 'Executive', columns: ['Name', 'PAN'], language: 'english' }) }
     });
     return result && /restricted/.test(result.replyText) && !/ABCDE/.test(result.replyText); // never the actual PAN-shaped value leaking in
+  });
+
+  console.log('='.repeat(70));
+  console.log('Phase 2 (2026-11-24, direct instruction, updated examples) - multi-target requests, real documents, zero-rows honesty, resend-as-format memory');
+  console.log('='.repeat(70));
+  check('siteDisplayLabel: a resolved value whose tail already reads as a match for the hint needs no parenthetical (the sender\'s own "Sangam" example)', hrReportService.siteDisplayLabel('New Kolkata – Sangam B', 'Sangam') === 'Sangam B');
+  check('siteDisplayLabel: a resolved value that does NOT read as a match for the hint gets the hint appended in parentheses (the sender\'s own "Triveni" -> "Plot A" example)', hrReportService.siteDisplayLabel('Plot A', 'Triveni') === 'Plot A (Triveni)');
+  check('siteDisplayLabel: no resolved value at all falls back to the raw hint, never null/crash', hrReportService.siteDisplayLabel(null, 'Somewhere') === 'Somewhere');
+
+  await checkAsync('LIVE INCIDENT (2026-11-24), direct instruction - two location targets in one message produce TWO separate, independently-filtered targets - never one combined (and broken) filter set', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000010', name: 'Someone', lang: 'banglish', text: 'Ballygunge & Srirampur-er staff list dao', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', locations: ['Ballygunge', 'Srirampur'], columns: ['Emp Code', 'Name'], language: 'banglish' }) }
+    });
+    const targets = result && result.pendingDocuments && result.pendingDocuments.targets;
+    return Boolean(targets) && targets.length === 2
+      && targets.find((t) => t.label === 'Ballygunge').candidates.length === 1
+      && targets.find((t) => t.label === 'Srirampur').candidates.length === 1;
+  });
+  await checkAsync('a filter that matches NO employees gets an honest "no rows" reply, never a false "Report ready" and never any pendingDocuments', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000011', name: 'Someone', lang: 'english', text: 'Nonexistent Place-er staff list dao', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', locations: ['Nonexistent Place'], columns: ['Name'], language: 'english' }) }
+    });
+    return result && result.case === 'hr_report' && !result.pendingDocuments && /no employees matched/i.test(result.replyText);
+  });
+  await checkAsync('Example 2 (direct instruction) - "resend as Excel" reuses the SAME just-sent report\'s targets/columns, only the format changes - no re-asking, no new filter classification needed', async () => {
+    const phone = '919000000012';
+    const first = await hrReportService.handleHrReportRequest({
+      phone, name: 'Someone', lang: 'banglish', text: 'Ballygunge-er staff list dao', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', locations: ['Ballygunge'], columns: ['Emp Code', 'Name'], format: 'pdf', language: 'banglish' }) }
+    });
+    const second = await hrReportService.handleHrReportRequest({
+      phone, name: 'Someone', lang: 'banglish', text: 'Eita Excel e din', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, resendLastAsFormat: 'excel', language: 'banglish' }) }
+    });
+    return first.pendingDocuments.format === 'pdf' && second.pendingDocuments.format === 'excel'
+      && second.pendingDocuments.targets.length === 1
+      && second.pendingDocuments.targets[0].label === first.pendingDocuments.targets[0].label
+      && second.pendingDocuments.includedColumns.map((c) => c.key).join(',') === first.pendingDocuments.includedColumns.map((c) => c.key).join(',');
+  });
+  await checkAsync('an approval-gated report (personal column about others) carries a pendingReportRender spec on the saved approval - rendering deferred to approval time, never a pre-built file', async () => {
+    const before = (await whatsappAssistant.listPendingApprovals()).length;
+    await hrReportService.handleHrReportRequest({
+      phone: '919000000013', name: 'Someone Else', lang: 'english', text: 'HR dept list soho Contact No dao', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'HR Dept', columns: ['Name', 'Contact No'], language: 'english' }) }
+    });
+    const pendingList = await whatsappAssistant.listPendingApprovals();
+    const after = pendingList.length;
+    const created = pendingList[pendingList.length - 1];
+    return after === before + 1 && Boolean(created.pendingReportRender) && created.pendingReportRender.columnKeys.includes('contactNumber') && created.pendingReportRender.format === 'pdf';
+  });
+  await checkAsync('deliverPendingReportDocuments (Phase 2 real render+send path) runs end to end in draft mode without throwing, for a single target', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000014', name: 'Someone', lang: 'english', text: 'HR dept list, Name, Designation', history: [],
+      senderEmployee: null, employees: FAKE_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', department: 'HR Dept', columns: ['Name', 'Designation'], language: 'english' }) }
+    });
+    await hrReportService.deliverPendingReportDocuments(result.pendingDocuments);
+    return true; // reaching here without throwing is the assertion - draft mode means no real network call happens
   });
 
   console.log('='.repeat(70));

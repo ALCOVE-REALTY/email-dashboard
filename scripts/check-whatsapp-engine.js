@@ -955,6 +955,18 @@ async function checkAsyncRealModel(label, fn) {
       } catch (err) { /* best effort */ }
     }
   });
+  await checkAsync('HR report Phase 3 (2026-11-24), direct instruction - executeApprovalSend recognizes a pendingReportRender approval and delegates to hrReportService.sendApprovedReport (never falls through to the plain-text preparedReplyText branch), removing the approval either way', async () => {
+    const hrReportService = require('../src/aiAssistant/hrReportService');
+    const beforeList = await whatsappAssistant.listPendingApprovals();
+    const fakeApproval = {
+      id: 'test-hr-report-approval-' + Date.now(), phone: LIVE_REVIEW_TEST_PHONE, name: 'TEST-HR-REPORT-APPROVAL', lang: 'english',
+      dataRequestSummary: 'HR report - 1 row(s)', preparedReplyText: 'HR report ready - 1 row(s). Columns: Name, Contact No.',
+      pendingReportRender: { targetsFilters: [{ status: 'ACTIVE', department: null, location: null, company: null }], columnKeys: ['name', 'contactNumber'], format: 'pdf' }
+    };
+    const result = await whatsappAssistant.executeApprovalSend(fakeApproval, null, null, null);
+    const afterList = await whatsappAssistant.listPendingApprovals();
+    return typeof result === 'string' && afterList.length === beforeList.length && typeof hrReportService.sendApprovedReport === 'function';
+  });
 
   console.log('='.repeat(70));
   console.log('Task 7 (2026-10-31): EXACTLY 9 heads (Aadhaar/PAN/bank details/salary/UAN/ESI/address/DOB/blood group) are hard-blocked for a THIRD PARTY now - everything else (employee code, mail id, emergency contact, reporting manager, etc.) is approval-gated, same ask-the-sender-first flow as contact number');

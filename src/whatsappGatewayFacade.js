@@ -47,16 +47,19 @@ async function sendWhatsAppMessage(phone, message) {
   };
 }
 
-// sendWhatsAppDocument(phone, fileBuffer, filename, caption) -> old shape:
+// sendWhatsAppDocument(phone, fileBuffer, filename, caption, mimeType?) ->
+// old shape:
 //   {ok:true, gatewayMessageId, gatewayResponse, waKey?}
 //   {ok:false, error, gatewayResponse?, httpStatus?, debugCode?, debugMessage?}
-// The old client hard-codes 'application/pdf' (it has only ever sent
-// PDFs) - matched here for the new gateway too, so behavior is identical
-// either way; a future caller needing another mime type would need this
-// extended, same as it would need extending in the old client today.
-async function sendWhatsAppDocument(phone, fileBuffer, filename, caption) {
+// mimeType (2026-11-24, HR reports Phase 2, direct instruction) - optional,
+// defaults to 'application/pdf' exactly like before, so the one existing
+// real caller (whatsappDocTestJob.js, PDF-only) is unaffected. The OLD
+// gateway client still only ever sends 'application/pdf' regardless (it
+// hard-codes the attachment's contentType) - unchanged, since that
+// gateway is being retired and has never sent anything but a PDF.
+async function sendWhatsAppDocument(phone, fileBuffer, filename, caption, mimeType) {
   if (!gatewayMode.isNewGatewayEnabled()) return whatsapp.sendWhatsAppDocument(phone, fileBuffer, filename, caption);
-  const media = { base64: Buffer.from(fileBuffer).toString('base64'), mimeType: 'application/pdf', fileName: filename };
+  const media = { base64: Buffer.from(fileBuffer).toString('base64'), mimeType: mimeType || 'application/pdf', fileName: filename };
   const result = await gatewayV1.sendDocument(phone, media, caption || null);
   if (!result.ok) return { ok: false, error: result.error, gatewayResponse: result.gatewayResponse || null, httpStatus: result.httpStatus || null, debugCode: result.debugCode, debugMessage: result.debugMessage };
   return {

@@ -27,9 +27,17 @@ const SECTION_ROW_HEIGHT = 20;
 // override (public/workforce.js) - every other on-screen report, including
 // this one, just uses plain window.print() at the browser's default
 // (portrait) page size.
-function buildTablePdfBuffer({ title, subtitle, columns, rows, landscape = true }) {
+// footerText/pageNumbers (2026-11-24, HR reports Phase 2, direct
+// instruction) - BOTH opt-in, default off: every existing caller (Exits/
+// Additions, Doer Management, the WhatsApp doc test) passes neither, so
+// its own output is byte-for-byte unchanged. `bufferPages` is only turned
+// on when one of these is actually requested, since it's what lets
+// doc.switchToPage() revisit earlier pages after the row loop to stamp a
+// footer/page count that wasn't known until every page existed.
+function buildTablePdfBuffer({ title, subtitle, columns, rows, landscape = true, footerText = null, pageNumbers = false }) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', layout: landscape ? 'landscape' : 'portrait' });
+    const needsFooterPass = Boolean(footerText) || Boolean(pageNumbers);
+    const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', layout: landscape ? 'landscape' : 'portrait', bufferPages: needsFooterPass });
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -248,6 +256,18 @@ function buildTablePdfBuffer({ title, subtitle, columns, rows, landscape = true 
       y += thisRowHeight;
       dataRowIndex++;
     });
+
+    if (needsFooterPass) {
+      const pageRange = doc.bufferedPageRange();
+      for (let i = 0; i < pageRange.count; i++) {
+        doc.switchToPage(pageRange.start + i);
+        const footerY = doc.page.height - PAGE_MARGIN + 10;
+        doc.fontSize(7).font('Helvetica').fillColor(COLOR_META);
+        if (footerText) doc.text(footerText, PAGE_MARGIN, footerY, { width: pageWidth / 2, align: 'left', lineBreak: false });
+        if (pageNumbers) doc.text('Page ' + (i + 1) + ' of ' + pageRange.count, PAGE_MARGIN, footerY, { width: pageWidth, align: 'right', lineBreak: false });
+        doc.fillColor('#000');
+      }
+    }
 
     doc.end();
   });

@@ -1,11 +1,15 @@
-// SUBH HR reports as WhatsApp documents (2026-11-23), direct instruction.
-// Phase 1 scope: classify "report/list/count" requests, resolve filters
-// and columns deterministically against the real employee directory, and
+// SUBH HR reports as WhatsApp documents (2026-11-23, direct instruction).
+// Phase 1: classify "report/list/count" requests, resolve filters and
+// columns deterministically against the real employee directory, and
 // apply the EXISTING access-tier rules (official/personal/restricted,
-// own-data-direct, personal-about-others-needs-approval). Output is
-// TEXT-only for now (a short preview) - Phase 2 swaps the rendering for
-// a real PDF/Excel from the exact same resolved rows/columns, without
-// touching anything in this file's own decision logic.
+// own-data-direct, personal-about-others-needs-approval).
+// Phase 2 (2026-11-24, direct instruction, updated examples): real PDF
+// (default) / Excel documents, multi-target requests (e.g. two sites in
+// one message -> two separate reports), resend-in-another-format follow-
+// ups, sent over WhatsApp as real documents - built on the exact same
+// resolved rows/columns Phase 1 already computed, without touching this
+// file's own decision logic (own-data-direct, approval-for-others'-
+// personal-columns, restricted-always-excluded all still apply unchanged).
 //
 // Deliberately a SEPARATE file and a SEPARATE classification path from
 // whatsappAssistant.js's own extract_hr_data_query/handleHrDataQueryRequest
@@ -18,6 +22,9 @@
 const dataAccessService = require('./dataAccessService');
 const companyDetailsService = require('./companyDetailsService');
 const workforceAnalytics = require('../workforceAnalytics');
+const pdfReport = require('../pdfReport');
+const tableExcelReport = require('../tableExcelReport');
+const whatsappGatewayFacade = require('../whatsappGatewayFacade');
 const { Redis } = require('@upstash/redis');
 
 let client;
@@ -34,7 +41,7 @@ function getClient() {
 // ---------------- Column catalog ----------------
 // Keys match dataAccessService.js's own HEAD_DEFINITIONS exactly (no
 // translation layer needed for a tier lookup). `label` is the English
-// document-header wording Phase 2 will use.
+// document-header wording Phase 2 uses.
 function confirmationDateValue(emp) {
   const d = workforceAnalytics.probationCompletionDate(emp.doj);
   return d ? d.toDateString() : null;
@@ -46,7 +53,7 @@ const COLUMN_CATALOG = [
   { key: 'department', label: 'Department', aliases: ['department', 'dept', 'dept.'], getValue: (e) => e.department },
   { key: 'groupD', label: 'Collar Type', aliases: ['collar', 'collar type', 'group d'], getValue: (e) => e.groupD },
   { key: 'gender', label: 'Gender', aliases: ['gender'], getValue: (e) => e.gender },
-  { key: 'location', label: 'Site', aliases: ['site', 'location', 'plot'], getValue: (e) => e.location },
+  { key: 'location', label: 'Working Location', aliases: ['site', 'location', 'plot', 'working location'], getValue: (e) => e.location },
   { key: 'companyLocation', label: 'Company Location', aliases: ['company location'], getValue: (e) => e.companyLocation },
   { key: 'company', label: 'Company', aliases: ['company'], getValue: (e) => e.company },
   { key: 'status', label: 'Status', aliases: ['status'], getValue: (e) => e.status },
@@ -74,9 +81,10 @@ const COLUMN_CATALOG = [
   { key: 'esiNumber', label: 'ESI No', aliases: ['esi', 'esi no', 'esi number'], getValue: (e) => e.esiNumber }
 ];
 const COLUMN_BY_KEY = new Map(COLUMN_CATALOG.map((c) => [c.key, c]));
-// Matches the direct instruction's own example wording exactly ("Emp ID,
-// Name, Designation, Department, Site, DOJ, Contact").
-const DEFAULT_COLUMN_KEYS = ['employeeId', 'name', 'designation', 'department', 'location', 'doj', 'contactNumber'];
+// LIVE INCIDENT (2026-11-24), direct instruction, updated examples -
+// replaces the Phase 1 default 7-column set. Order matches the sender-
+// facing column question exactly (option 1-13).
+const DEFAULT_COLUMN_KEYS = ['employeeId', 'name', 'designation', 'department', 'groupD', 'gender', 'location', 'companyLocation', 'company', 'reportingDoer', 'doj', 'reportingManager', 'status'];
 
 function findColumnByAlias(raw) {
   const t = String(raw || '').trim().toLowerCase();
@@ -88,17 +96,16 @@ function allNonRestrictedColumnKeys() {
 }
 
 // ---------------- Column question (ask once) ----------------
+// LIVE INCIDENT (2026-11-24), direct instruction - exact wording from the
+// sender's own updated Example 1, one static string per language (no
+// numbered-list template anymore - the numbers are already inline).
 const COLUMN_QUESTION_TEXT = {
-  banglish: (numberedList) => 'Report-e kon kon column chai?\n' + numberedList +
-    '\nNumber likhun (jemon "1,3") othoba column-er naam. "default" likhle upor-er shob column debo, "sob"/"all" likhle shob column debo (restricted bade).',
-  hinglish: (numberedList) => 'Report mein kaunse columns chahiye?\n' + numberedList +
-    '\nNumber likhiye (jaise "1,3") ya column ka naam. "default" likhne se upar ke columns milenge, "sob"/"all" likhne se sabhi columns (restricted chhodkar).',
-  english: (numberedList) => 'Which columns do you want in the report?\n' + numberedList +
-    '\nReply with numbers (e.g. "1,3") or the column names. Type "default" for the above columns, or "all" for every column (except restricted ones).'
+  banglish: 'Report-e kon kon column chai? (jemon 1. Emp Code, 2. Name, 3. Designation, 4. Dept., 5. Collar Type, 6. Gender, 7. Working Location, 8. Company Location, 9. Company, 10. Reporting DOER, 11. DOJ, 12. HOD, 13. Status) — Number likhun (jemon "1,3") othoba column-er naam, likhle ei column-gulo debo.',
+  hinglish: 'Report mein kaunse columns chahiye? (jaise 1. Emp Code, 2. Name, 3. Designation, 4. Dept., 5. Collar Type, 6. Gender, 7. Working Location, 8. Company Location, 9. Company, 10. Reporting DOER, 11. DOJ, 12. HOD, 13. Status) — Number likhiye (jaise "1,3") ya column ka naam, likhne par yehi columns milenge.',
+  english: 'Which columns do you want in the report? (e.g. 1. Emp Code, 2. Name, 3. Designation, 4. Dept., 5. Collar Type, 6. Gender, 7. Working Location, 8. Company Location, 9. Company, 10. Reporting DOER, 11. DOJ, 12. HOD, 13. Status) — reply with numbers (e.g. "1,3") or the column names and I\'ll give you those columns.'
 };
 function buildColumnQuestionText(lang) {
-  const optionLines = DEFAULT_COLUMN_KEYS.map((key, i) => (i + 1) + '. ' + COLUMN_BY_KEY.get(key).label).join('\n');
-  return (COLUMN_QUESTION_TEXT[lang] || COLUMN_QUESTION_TEXT.english)(optionLines);
+  return COLUMN_QUESTION_TEXT[lang] || COLUMN_QUESTION_TEXT.english;
 }
 const COULD_NOT_PARSE_COLUMNS_TEXT = {
   banglish: 'Bujhte parini, abar bolun please.',
@@ -106,6 +113,26 @@ const COULD_NOT_PARSE_COLUMNS_TEXT = {
   english: "Didn't quite catch that - please try again."
 };
 
+// LIVE INCIDENT (2026-11-24), direct instruction - "1 2,3,6" was read as
+// only "3,6": the old split regex (`[,/]| and /i`) never broke on bare
+// whitespace, so "1 2" (no comma between the first two numbers) stayed
+// one unsplit chunk and Number("1 2") is NaN. Fix: split on the normal
+// separators first, then - ONLY for a chunk that is itself multiple
+// whitespace-separated PURE NUMBERS (never a multi-word alias like "doer
+// name" or "collar type") - split that chunk further on whitespace too.
+function splitColumnAnswerParts(raw) {
+  const roughParts = String(raw).split(/[,/&]|\band\b/i).map((p) => p.trim()).filter(Boolean);
+  const parts = [];
+  for (const rp of roughParts) {
+    const tokens = rp.split(/\s+/).filter(Boolean);
+    if (tokens.length > 1 && tokens.every((tok) => /^\d+$/.test(tok))) {
+      parts.push(...tokens);
+    } else {
+      parts.push(rp);
+    }
+  }
+  return parts;
+}
 // Resolves a raw answer (either the FIRST message's model-extracted
 // column strings, or the FOLLOW-UP answer to the column question) into
 // canonical column keys. Deterministic - no model call for the
@@ -118,7 +145,7 @@ function resolveColumnAnswerText(raw, optionKeys) {
   if (!t) return { keys: null, wantsAll: false };
   if (t === 'default') return { keys: optionKeys.slice(), wantsAll: false };
   if (/^(sob|all|সব)$/.test(t)) return { keys: null, wantsAll: true };
-  const parts = t.split(/[,/]| and /i).map((p) => p.trim()).filter(Boolean);
+  const parts = splitColumnAnswerParts(t);
   const resolved = [];
   for (const part of parts) {
     const num = Number(part);
@@ -239,6 +266,58 @@ async function resolveReportFilters(filters) {
   return Object.assign({}, filters, { resolvedLocations, resolvedDepartments, resolvedCompany });
 }
 
+// ---------------- Target resolution (one filter set -> one candidate set) ----------------
+// LIVE INCIDENT (2026-11-24), direct instruction - "Sangam & Triveni" used
+// to produce ONE combined (broken) filter set and "Report ready (0 rows)".
+// A "target" is now the real unit of work: one resolved location/company/
+// department filter set -> its own candidate list -> its own rendered
+// file, sent as its own WhatsApp document with its own caption. Multiple
+// location hints in one message -> multiple targets -> multiple reports,
+// exactly per the updated Example 1.
+function titleCaseStatus(raw) {
+  const s = (raw && String(raw).trim()) ? String(raw).trim() : 'Active';
+  if (/^(all|sob|সব)$/i.test(s)) return 'All';
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+// A resolved site value's own short/display form (the part after the last
+// "-"/"–" separator, e.g. "New Kolkata – Sangam B" -> "Sangam B"), with
+// the sender's original hint appended in parentheses ONLY when that short
+// form doesn't already read as a match for it (e.g. hint "Triveni" against
+// resolved "Plot A" -> "Plot A (Triveni)") - matches the sender's own
+// updated examples exactly for both sites.
+function siteDisplayLabel(resolvedValue, originalHint) {
+  const hint = originalHint ? String(originalHint).trim() : '';
+  if (!resolvedValue) return hint || null;
+  const segments = String(resolvedValue).split(/\s*[–-]\s*/);
+  const tail = segments.length > 1 ? segments[segments.length - 1].trim() : String(resolvedValue).trim();
+  if (hint && tail.toLowerCase().includes(hint.toLowerCase())) return tail;
+  return hint ? (tail + ' (' + hint + ')') : tail;
+}
+function deriveTargetLabel({ locationHint, resolvedLocations, companyHint, departmentHint }) {
+  if (locationHint) {
+    const resolved = resolvedLocations && resolvedLocations.length ? resolvedLocations[0] : null;
+    return siteDisplayLabel(resolved, locationHint);
+  }
+  // Company/department labels keep the sender's own short hint/code
+  // verbatim (e.g. "ADLLP") rather than the full resolved legal name -
+  // that's the whole point of a company code, and matches the sender's
+  // own updated Example 5 filename exactly.
+  if (companyHint) return String(companyHint).trim();
+  if (departmentHint) return String(departmentHint).trim();
+  return null;
+}
+async function resolveOneTargetFromFilters(filters, employees) {
+  const resolvedFilters = await resolveReportFilters(filters);
+  const candidates = filterEmployeesForReport(employees, resolvedFilters);
+  const label = deriveTargetLabel({
+    locationHint: filters.location,
+    resolvedLocations: resolvedFilters.resolvedLocations,
+    companyHint: filters.company,
+    departmentHint: filters.department
+  });
+  return { locationHint: filters.location, filters, candidates, label, statusLabel: titleCaseStatus(filters.status) };
+}
+
 // ---------------- AI extraction (classify + structure only) ----------------
 function hrReportRequestTool() {
   return {
@@ -254,7 +333,7 @@ function hrReportRequestTool() {
           status: { type: 'string', description: 'The employment status to filter on, in the sender\'s own words if they named one (e.g. "Active", "Inactive", "Notice Period", or "all"/"sob" for every status) - omit entirely if status was not mentioned at all (code then defaults to Active).' },
           designation: { type: 'string', description: 'Role/title keyword, e.g. "engineer", "welder" - omit if none named.' },
           department: { type: 'string', description: 'Department name or a distinctive substring, exactly as the sender said it - omit if none named.' },
-          location: { type: 'string', description: 'Site/location name or nickname, exactly as the sender said it (e.g. "Sangam", "Triveni") - omit if none named.' },
+          locations: { type: 'array', items: { type: 'string' }, description: 'One entry per DISTINCT site/location the sender named, in the order they said them (e.g. "Sangam & Triveni" -> ["Sangam","Triveni"]) - each becomes its own separate report. Omit entirely (empty array) if no site was mentioned at all.' },
           company: { type: 'string', description: 'Company name or company code, exactly as the sender said it (e.g. "ADLLP") - omit if none named.' },
           employmentType: { type: 'string', description: '"Probation" or "Confirmed" - omit if not mentioned.' },
           collarType: { type: 'string', description: 'Collar/group type if mentioned (e.g. "White", "Blue") - omit if not mentioned.' },
@@ -262,6 +341,7 @@ function hrReportRequestTool() {
           dojYear: { type: 'integer', description: 'The 4-digit year that goes with dojMonth (assume the current year if the sender did not say one) - omit if dojMonth is omitted.' },
           columns: { type: 'array', items: { type: 'string' }, description: 'The exact column names the sender asked for, in the order they said them (e.g. ["Emp Code","Name","DOJ"]). A single-element array ["all"] or ["sob"] if the sender said they want every column. Omit entirely (empty array) if the sender did not say which columns at all - code will then ask.' },
           format: { type: 'string', enum: ['pdf', 'excel'], description: '"excel" only if the sender explicitly asked for Excel/xlsx (e.g. "excel-e dao") - omit otherwise (code defaults to PDF).' },
+          resendLastAsFormat: { type: 'string', enum: ['pdf', 'excel'], description: 'Set ONLY when the sender is asking to resend/convert the report(s) JUST sent in this conversation into a different file format (e.g. "Ei duto Excel e din", "PDF te abar dao") - never for a brand-new report request. Omit for anything else.' },
           language: { type: 'string', enum: ['english', 'banglish', 'hinglish'], description: 'The language/script of THIS message, for replying in the same language/script.' }
         },
         required: ['matchesReportIntent']
@@ -309,29 +389,191 @@ async function clearPendingColumnQuestion(phone) {
   try { await redis.del(PENDING_COLUMN_QUESTION_PREFIX + phone); } catch (err) { /* best effort */ }
 }
 
-// ---------------- Reply text (Phase 1: text preview only) ----------------
-const COUNT_REPLY_TEXT = {
-  banglish: (n) => 'Ekhon ' + n + ' jon match korche.',
-  hinglish: (n) => 'Abhi ' + n + ' log match kar rahe hain.',
-  english: (n) => n + ' employee(s) match.'
-};
-function buildCountReplyText(candidates, lang) {
-  return (COUNT_REPLY_TEXT[lang] || COUNT_REPLY_TEXT.english)(candidates.length);
+// ---------------- Last-sent-report memory (Phase 2, "resend as Excel") ----------------
+// LIVE INCIDENT (2026-11-24), direct instruction, Example 2 - "Ei duto
+// Excel e din" must resend the SAME reports (same targets/columns), only
+// the format changes, with NO re-asking. Short, bounded TTL (near-term
+// follow-up window, never a stale/old context resurfacing days later).
+const LAST_REPORT_PREFIX = 'wa-report-last:';
+const LAST_REPORT_TTL_SECONDS = 60 * 60;
+async function saveLastReportSelection(phone, data) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(LAST_REPORT_PREFIX + phone, JSON.stringify(Object.assign({}, data, { savedAt: Date.now() })), { ex: LAST_REPORT_TTL_SECONDS }); } catch (err) { /* best effort */ }
+}
+async function getLastReportSelection(phone) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(LAST_REPORT_PREFIX + phone);
+    if (!raw) return null;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (err) { return null; }
+}
+
+// ---------------- Reply text ----------------
+function buildCountReplyText(targets, lang) {
+  const total = targets.reduce((s, t) => s + t.candidates.length, 0);
+  if (targets.length <= 1) {
+    const only = targets[0] || { candidates: [], label: null };
+    const prefix = only.label ? only.label + (/^(banglish|hinglish)$/.test(lang) ? '-te ' : ' - ') : '';
+    const single = {
+      banglish: (n) => prefix + 'ekhon ' + n + ' jon match korche.',
+      hinglish: (n) => prefix + 'abhi ' + n + ' log match kar rahe hain.',
+      english: (n) => prefix + n + ' employee(s) match.'
+    };
+    return (single[lang] || single.english)(total);
+  }
+  const perTargetLine = targets.map((t) => (t.label || 'Unknown') + ': ' + t.candidates.length).join(' · ');
+  const multi = {
+    banglish: (lines, n) => lines + '\nMot: ' + n + ' jon.',
+    hinglish: (lines, n) => lines + '\nKul: ' + n + ' log.',
+    english: (lines, n) => lines + '\nTotal: ' + n + '.'
+  };
+  return (multi[lang] || multi.english)(perTargetLine, total);
 }
 const HELD_FOR_APPROVAL_TEXT = {
   banglish: 'Report-ta ready, Subhodeep-er approval pele pathacchi.',
   hinglish: 'Report taiyaar hai, Subhodeep ki approval milte hi bhej doonga.',
   english: "The report is ready - I'll send it once Subhodeep approves."
 };
-// Phase 1 ONLY - a short text preview standing in for the real document.
-// Phase 2 renders the SAME includedColumns/candidates as a real PDF/Excel
-// and replaces this function's call site, never its inputs' shape.
-function buildReportPreviewText({ candidates, includedColumns, excludedRestrictedLabels }) {
-  const header = 'Report ready (' + candidates.length + ' row' + (candidates.length === 1 ? '' : 's') + '). Columns: ' + includedColumns.map((c) => c.label).join(', ') + '.';
+const NO_ROWS_TEXT = {
+  banglish: 'Dukkhito, ei filter-e kono employee pawa jayni. Site/company/department-er naam ta abar check korun.',
+  hinglish: 'Maaf kijiye, is filter mein koi employee nahi mila. Site/company/department ka naam dobara check kijiye.',
+  english: 'Sorry, no employees matched these filters - please double check the site/company/department name.'
+};
+const REPORT_READY_INTERIM_TEXT = {
+  banglish: 'Report ready kore pathacchi…',
+  hinglish: 'Report taiyaar kar ke bhej raha hoon…',
+  english: 'Preparing your report, sending it shortly…'
+};
+// A direct-send report normally has NO separate text reply (the document
+// + caption ARE the reply) - but a restricted column asked for and left
+// out still needs to be SAID, not silently dropped, so this is the one
+// case the fast path still sends a short text alongside the document(s).
+const RESTRICTED_LEFT_OUT_TEXT = {
+  banglish: (labels) => labels.join(', ') + ' report-e dewa hoyni (restricted).',
+  hinglish: (labels) => labels.join(', ') + ' report mein nahi diya gaya (restricted).',
+  english: (labels) => labels.join(', ') + ' left out of the report (restricted).'
+};
+// Text-only preview - used ONLY for the owner's Action Needed card display
+// (an approval-gated report's dataRequestSummary/preparedReplyText), never
+// sent to the sender directly - the sender either gets the real document
+// (direct-send) or the HELD_FOR_APPROVAL_TEXT holding line (approval-gated).
+function buildReportPreviewText({ targets, includedColumns, excludedRestrictedLabels }) {
+  const summaryLines = targets.map((t) => (t.label ? t.label + ': ' : '') + t.candidates.length + ' row(s)').join(' · ');
   const restrictedNote = excludedRestrictedLabels.length ? (' ' + excludedRestrictedLabels.join(', ') + ' left out (restricted).') : '';
-  const sampleRows = candidates.slice(0, 5).map((e) => includedColumns.map((c) => c.getValue(e)).join(' | '));
-  const sample = sampleRows.length ? ('\n' + sampleRows.join('\n') + (candidates.length > sampleRows.length ? '\n...' : '')) : '';
-  return header + restrictedNote + sample;
+  return 'HR report ready - ' + summaryLines + '. Columns: ' + includedColumns.map((c) => c.label).join(', ') + '.' + restrictedNote;
+}
+
+// ---------------- Phase 2: real file rendering + WhatsApp document send ----------------
+const REPORT_FOOTER_TEXT = 'Generated by SUBH - Workforce Intelligence';
+const INTERIM_WAIT_MS = 30000; // "Report ready kore pathacchi..." shown only past this
+function slugifyForFilename(raw) {
+  return String(raw || '').trim().replace(/[^\w]+/g, '-').replace(/^-+|-+$/g, '');
+}
+function todayDisplayDateHuman() {
+  return new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+function reportBaseName({ targetLabel, status }) {
+  const dateForFilename = todayDisplayDateHuman().replace(/ /g, '-');
+  return [targetLabel, status, 'Staff', dateForFilename].filter(Boolean).map(slugifyForFilename).join('-');
+}
+function reportCaption({ targetLabel, status, count }) {
+  return (targetLabel ? targetLabel + ' — ' : '') + status + ' staff · ' + count;
+}
+async function renderReportBuffer({ title, subtitle, includedColumns, candidates, format }) {
+  const columns = ['Sl. No.'].concat(includedColumns.map((c) => c.label));
+  const rows = candidates.map((e, i) => [i + 1].concat(includedColumns.map((c) => c.getValue(e))));
+  if (format === 'excel') {
+    const buffer = await tableExcelReport.buildTableExcelBuffer({ title, subtitle, columns, rows });
+    return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ext: 'xlsx' };
+  }
+  const buffer = await pdfReport.buildTablePdfBuffer({ title, subtitle, columns, rows, landscape: true, footerText: REPORT_FOOTER_TEXT, pageNumbers: true });
+  return { buffer, mimeType: 'application/pdf', ext: 'pdf' };
+}
+// Shared by BOTH delivery paths (the normal auto-send path below, and
+// executeApprovalSend's own call into sendApprovedReport) - one real
+// WhatsApp document for one target, draft-mode-aware, never throws (a
+// failure is always reported back as {ok:false, error}, never crashes the
+// caller's loop).
+async function sendOneReportDocument({ phone, name, format, target, includedColumns }) {
+  const wa = getWhatsappAssistant();
+  const title = target.label || 'HR Report';
+  const subtitle = target.statusLabel + ' staff · ' + target.candidates.length + ' · ' + todayDisplayDateHuman();
+  let rendered;
+  try {
+    rendered = await renderReportBuffer({ title, subtitle, includedColumns, candidates: target.candidates, format });
+  } catch (err) {
+    return { ok: false, error: 'Could not generate the file: ' + err.message };
+  }
+  const filename = reportBaseName({ targetLabel: target.label, status: target.statusLabel }) + '.' + rendered.ext;
+  const caption = reportCaption({ targetLabel: target.label, status: target.statusLabel, count: target.candidates.length });
+  if (!wa.isRealSendAllowedFor(phone)) {
+    console.log('[hr-report] [DRAFT MODE] would send ' + filename + ' (' + target.candidates.length + ' rows) to ' + phone);
+    return { ok: true, draft: true, filename };
+  }
+  const result = await whatsappGatewayFacade.sendWhatsAppDocument(phone, rendered.buffer, filename, caption, rendered.mimeType);
+  if (!result.ok) return { ok: false, error: result.error || 'Unknown send error', filename };
+  await wa.appendConvoHistory(phone, 'out', '[document] ' + caption).catch(() => {});
+  await wa.logInboxEvent({ chatId: phone, name: name || null, isGroup: false, messageSummary: '[HR report document]', aCase: 'hr_report', sentText: '[document] ' + caption, outcome: 'sent', sentAt: Date.now(), gatewayMessageId: result.gatewayMessageId || null }).catch(() => {});
+  return { ok: true, filename };
+}
+// Called (fire-and-forget) from the WhatsApp dispatcher ONLY after the
+// never-auto gate has already passed - never generates/sends anything for
+// a never-auto-listed sender. Concurrent sends across targets (not
+// sequential) so a 2-3 site request stays within the "Total <= 60s, max
+// 90s" budget - total latency is bounded by the slowest single send, not
+// their sum. The 30s interim "report ready" line is a cancellable timer,
+// not a hard abort - the real work is never killed early.
+async function deliverPendingReportDocuments(spec) {
+  const wa = getWhatsappAssistant();
+  let settled = false;
+  const interimTimer = setTimeout(() => {
+    if (settled) return;
+    wa.sendWhatsAppChunked(spec.phone, REPORT_READY_INTERIM_TEXT[spec.lang] || REPORT_READY_INTERIM_TEXT.english).catch(() => {});
+  }, INTERIM_WAIT_MS);
+  try {
+    const outcomes = await Promise.all(spec.targets.map((t) => sendOneReportDocument({ phone: spec.phone, name: spec.name, format: spec.format, target: t, includedColumns: spec.includedColumns })));
+    const failed = outcomes.filter((o) => !o.ok);
+    if (failed.length) {
+      await wa.postOwnerNotification('⚠️ HR report: ' + (spec.name || spec.phone) + '-ke document pathate giye error holo: ' + failed.map((o) => o.error).join('; ')).catch(() => {});
+    }
+  } finally {
+    settled = true;
+    clearTimeout(interimTimer);
+  }
+}
+// Approval-gated path (Phase 3) - rendering is deferred to THIS moment
+// (approval-click time), never approval-creation time, so a report that
+// sits pending for a while always reflects LIVE employee data. Sequential
+// sends (not Promise.all) - the owner tapped Send manually, no live
+// WhatsApp-turn time budget to respect here. Mirrors executeApprovalSend's
+// own return-a-short-status-string convention.
+async function sendApprovedReport(approval) {
+  const wa = getWhatsappAssistant();
+  const spec = approval.pendingReportRender;
+  const employeeService = require('../employeeService');
+  const { employees } = await employeeService.getEmployeeData();
+  const targets = [];
+  for (const filters of spec.targetsFilters) targets.push(await resolveOneTargetFromFilters(filters, employees));
+  const includedColumns = spec.columnKeys.map((k) => COLUMN_BY_KEY.get(k)).filter(Boolean);
+  const totalCandidates = targets.reduce((s, t) => s + t.candidates.length, 0);
+  if (totalCandidates === 0) {
+    return approval.name + ' er report-e ekhon ar kono matching employee pawa jacche na (data change hoye thakte pare) - pathano gelo na.';
+  }
+  if (!wa.isRealSendAllowedFor(approval.phone)) {
+    return '[DRAFT MODE] ' + approval.name + '-ke HR report pathano hoto (' + totalCandidates + ' row(s)).';
+  }
+  const outcomes = [];
+  for (const t of targets) {
+    outcomes.push(await sendOneReportDocument({ phone: approval.phone, name: approval.name, format: spec.format, target: t, includedColumns }));
+  }
+  const failed = outcomes.filter((o) => !o.ok);
+  if (failed.length) {
+    return '⚠️ ' + approval.name + '-ke report pathate giye kichu file-e error holo: ' + failed.map((o) => o.error).join('; ');
+  }
+  return '✓ ' + approval.name + '-ke HR report (' + totalCandidates + ' row(s)) pathano holo.';
 }
 
 // ---------------- Orchestration ----------------
@@ -355,33 +597,53 @@ async function handleHrReportRequest({ phone, name, lang, text, history, senderE
   }
   const extracted = await extract(text, history).catch(() => null);
   if (!extracted || !extracted.matchesReportIntent) return null;
+  if (extracted.resendLastAsFormat) {
+    const last = await getLastReportSelection(phone);
+    if (last) {
+      const targets = [];
+      for (const filters of last.targetsFilters) targets.push(await resolveOneTargetFromFilters(filters, employees));
+      return finalizeReports({ phone, name, lang: extracted.language || last.lang || lang, columnKeys: last.columnKeys, format: extracted.resendLastAsFormat, targets, senderEmployee });
+    }
+    // No memory found (TTL expired, or nothing was ever sent this
+    // session) - falls through to a normal fresh request below, using
+    // whatever else the model extracted from this same message.
+  }
   return beginReportRequest({ phone, name, lang: extracted.language || lang, text, extracted, senderEmployee, employees });
 }
 
 async function beginReportRequest({ phone, name, lang, text, extracted, senderEmployee, employees }) {
-  const filters = {
+  const baseFilters = {
     status: extracted.status || null,
     designation: extracted.designation || null,
     department: extracted.department || null,
-    location: extracted.location || null,
     company: extracted.company || null,
     employmentType: extracted.employmentType || null,
     groupD: extracted.collarType || null,
     dojMonth: extracted.dojMonth || null,
     dojYear: extracted.dojYear || null
   };
-  const resolvedFilters = await resolveReportFilters(filters);
-  const candidates = filterEmployeesForReport(employees, resolvedFilters);
+  // LIVE INCIDENT (2026-11-24) - one target per distinct location hint
+  // (never one combined/broken filter set); no location hint at all means
+  // exactly one target with no location filter.
+  const locationHints = (extracted.locations && extracted.locations.length) ? extracted.locations : [null];
   const format = extracted.format === 'excel' ? 'excel' : 'pdf';
-  if (extracted.intent === 'count') {
-    return { case: 'hr_report', replyText: buildCountReplyText(candidates, lang), summaryForOwner: text.slice(0, 160) };
+
+  const targets = [];
+  for (const locHint of locationHints) {
+    const filters = Object.assign({}, baseFilters, { location: locHint });
+    targets.push(await resolveOneTargetFromFilters(filters, employees));
   }
+
+  if (extracted.intent === 'count') {
+    return { case: 'hr_report', replyText: buildCountReplyText(targets, lang), summaryForOwner: text.slice(0, 160) };
+  }
+
   const { keys: columnKeys, wantsAll } = resolveModelColumns(extracted.columns);
   if (!columnKeys && !wantsAll) {
-    await savePendingColumnQuestion(phone, { filters, format, lang });
+    await savePendingColumnQuestion(phone, { targetsFilters: targets.map((t) => t.filters), format, lang });
     return { case: 'hr_report', replyText: buildColumnQuestionText(lang), summaryForOwner: text.slice(0, 160) };
   }
-  return finalizeReport({ phone, name, lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format, candidates, senderEmployee });
+  return finalizeReports({ phone, name, lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format, targets, senderEmployee });
 }
 
 async function continueWithColumnAnswer({ phone, name, lang, text, pending, senderEmployee, employees }) {
@@ -393,39 +655,72 @@ async function continueWithColumnAnswer({ phone, name, lang, text, pending, send
     return { case: 'hr_report', replyText: (COULD_NOT_PARSE_COLUMNS_TEXT[pending.lang] || COULD_NOT_PARSE_COLUMNS_TEXT.english) + '\n\n' + buildColumnQuestionText(pending.lang), summaryForOwner: text.slice(0, 160) };
   }
   await clearPendingColumnQuestion(phone);
-  const resolvedFilters = await resolveReportFilters(pending.filters);
-  const candidates = filterEmployeesForReport(employees, resolvedFilters);
-  return finalizeReport({ phone, name, lang: pending.lang || lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format: pending.format, candidates, senderEmployee });
+  const targets = [];
+  for (const filters of pending.targetsFilters) targets.push(await resolveOneTargetFromFilters(filters, employees));
+  return finalizeReports({ phone, name, lang: pending.lang || lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format: pending.format, targets, senderEmployee });
 }
 
-async function finalizeReport({ phone, name, lang, columnKeys, format, candidates, senderEmployee }) {
+async function finalizeReports({ phone, name, lang, columnKeys, format, targets, senderEmployee }) {
   const { includedColumns, excludedRestrictedLabels, tierMap } = await classifyColumnsForAccess(columnKeys);
-  const isAboutSelfOnly = Boolean(senderEmployee) && candidates.length === 1 && candidates[0].employeeId === senderEmployee.employeeId;
+  const totalCandidates = targets.reduce((s, t) => s + t.candidates.length, 0);
+  // LIVE INCIDENT (2026-11-24) - "Report ready (0 rows)" used to look like
+  // a (silently broken) success; now an honest, actionable message, and
+  // never generates/sends any file.
+  if (totalCandidates === 0) {
+    return { case: 'hr_report', replyText: NO_ROWS_TEXT[lang] || NO_ROWS_TEXT.english, summaryForOwner: 'HR report - 0 rows matched' };
+  }
+  const isSingleSelfTarget = targets.length === 1 && Boolean(senderEmployee) && targets[0].candidates.length === 1 && targets[0].candidates[0].employeeId === senderEmployee.employeeId;
   // Phase 1 change 1 (direct instruction) - a report that resolves to
   // EXACTLY the sender's own record gets every requested official+
   // personal column directly, no approval - restricted stays excluded
   // regardless (handled above, uniformly). Anything else (other people,
-  // even if the sender happens to be among several rows) keeps the
-  // EXISTING rule: personal columns about others need approval.
+  // even if the sender happens to be among several rows, or multiple
+  // targets) keeps the EXISTING rule: personal columns about others need
+  // approval.
   const hasPersonalColumn = includedColumns.some((c) => (tierMap[c.key] || 'personal') === 'personal');
-  const needsApproval = hasPersonalColumn && !isAboutSelfOnly;
-  const previewText = buildReportPreviewText({ candidates, includedColumns, excludedRestrictedLabels, format });
+  const needsApproval = hasPersonalColumn && !isSingleSelfTarget;
 
   if (needsApproval) {
     const wa = getWhatsappAssistant();
+    const previewText = buildReportPreviewText({ targets, includedColumns, excludedRestrictedLabels });
     await wa.savePendingApproval({
-      phone, name, requestText: 'HR report (' + candidates.length + ' rows)',
-      dataRequestSummary: 'HR report - ' + candidates.length + ' row(s), columns: ' + includedColumns.map((c) => c.label).join(', '),
-      lang, preparedReplyText: previewText, preparedCard: null, preparedError: null
+      phone, name, requestText: 'HR report (' + totalCandidates + ' rows)',
+      dataRequestSummary: 'HR report - ' + targets.map((t) => (t.label ? t.label + ': ' : '') + t.candidates.length).join(' · '),
+      lang, preparedReplyText: previewText, preparedCard: null, preparedError: null,
+      pendingReportRender: { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), format }
     });
-    return { case: 'hr_report', replyText: HELD_FOR_APPROVAL_TEXT[lang] || HELD_FOR_APPROVAL_TEXT.english, summaryForOwner: 'HR report held for approval - ' + candidates.length + ' row(s)' };
+    return { case: 'hr_report', replyText: HELD_FOR_APPROVAL_TEXT[lang] || HELD_FOR_APPROVAL_TEXT.english, summaryForOwner: 'HR report held for approval - ' + totalCandidates + ' row(s)' };
   }
-  return { case: 'hr_report', replyText: previewText, summaryForOwner: 'HR report - ' + candidates.length + ' row(s)' };
+
+  await saveLastReportSelection(phone, { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), lang, format });
+
+  // No separate text reply for the fast path - the document(s) + caption
+  // ARE the reply (matches the sender's own updated Example 1 exactly) -
+  // EXCEPT a restricted column that was asked for and left out, which
+  // still needs to be SAID, not silently dropped just because there's no
+  // text preview anymore. deliverPendingReportDocuments (called by the
+  // WhatsApp dispatcher, AFTER the never-auto gate) sends the "report
+  // ready kore pathacchi..." interim line itself if rendering + sending
+  // crosses 30s.
+  const replyText = excludedRestrictedLabels.length ? (RESTRICTED_LEFT_OUT_TEXT[lang] || RESTRICTED_LEFT_OUT_TEXT.english)(excludedRestrictedLabels) : null;
+  return {
+    case: 'hr_report',
+    replyText,
+    summaryForOwner: 'HR report - ' + totalCandidates + ' row(s) across ' + targets.length + ' target(s)',
+    pendingDocuments: {
+      phone, name, lang, format,
+      targets: targets.map((t) => ({ label: t.label, statusLabel: t.statusLabel, candidates: t.candidates })),
+      includedColumns
+    }
+  };
 }
 
 module.exports = {
   // Orchestration (the one real entry point the dispatcher calls)
   handleHrReportRequest,
+  // Dispatcher-facing delivery (Phase 2/3)
+  deliverPendingReportDocuments,
+  sendApprovedReport,
   // Test-only / Phase-2-facing seams
   COLUMN_CATALOG,
   DEFAULT_COLUMN_KEYS,
@@ -437,6 +732,8 @@ module.exports = {
   filterEmployeesForReport,
   resolveReportFilters,
   resolveCompanyFilter,
+  resolveOneTargetFromFilters,
+  siteDisplayLabel,
   buildColumnQuestionText,
   buildCountReplyText,
   buildReportPreviewText,
@@ -445,10 +742,12 @@ module.exports = {
   savePendingColumnQuestion,
   getPendingColumnQuestion,
   clearPendingColumnQuestion,
+  saveLastReportSelection,
+  getLastReportSelection,
   // Lower-level orchestration steps - test-only (handleHrReportRequest's
   // own deps.extract seam is the normal way to drive the full pipeline;
   // these are exposed for finer-grained unit tests of one stage alone).
   beginReportRequest,
   continueWithColumnAnswer,
-  finalizeReport
+  finalizeReports
 };

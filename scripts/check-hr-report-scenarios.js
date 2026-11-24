@@ -31,7 +31,13 @@ async function main() {
     {
       name: 'list, Banglish, site filter, no columns named',
       text: 'Sangam site-er active staff-er list dao',
-      check: (r) => r && r.matchesReportIntent === true && r.intent === 'list' && has(r.location, 'sangam') && (!r.columns || r.columns.length === 0)
+      check: (r) => r && r.matchesReportIntent === true && r.intent === 'list' && Array.isArray(r.locations) && r.locations.some((l) => has(l, 'sangam')) && (!r.columns || r.columns.length === 0)
+    },
+    {
+      name: 'Phase 2 (2026-11-24) - two sites in one message -> locations array with BOTH, not one combined string',
+      text: 'Amake Sangam & Triveni er staff list dao',
+      check: (r) => r && r.matchesReportIntent === true && Array.isArray(r.locations) && r.locations.length === 2 &&
+        r.locations.some((l) => has(l, 'sangam')) && r.locations.some((l) => has(l, 'triveni'))
     },
     {
       name: 'list, English, explicit columns',
@@ -68,7 +74,12 @@ async function main() {
     {
       name: 'Hinglish count',
       text: 'Triveni mein kitne active log hain?',
-      check: (r) => r && r.matchesReportIntent === true && r.intent === 'count' && has(r.location, 'triveni')
+      check: (r) => r && r.matchesReportIntent === true && r.intent === 'count' && Array.isArray(r.locations) && r.locations.some((l) => has(l, 'triveni'))
+    },
+    {
+      name: 'Phase 2 (2026-11-24) - "resend as Excel" follow-up is classified as resendLastAsFormat, never a brand-new report',
+      text: 'Ei duto Excel e din',
+      check: (r) => r && r.matchesReportIntent === true && r.resendLastAsFormat === 'excel'
     },
     {
       name: 'English list with filter + columns combined',

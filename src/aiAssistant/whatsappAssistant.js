@@ -11047,6 +11047,18 @@ async function executeApprovalSend(approval, editInstruction, selectedIndex, edi
   // card stays visible and untouched so the owner can turn the toggle off
   // and try again, instead of the approval being silently consumed.
   if (await isNeverAuto(approval.phone)) throw new Error(NEVER_AUTO_BLOCKED_MESSAGE);
+  // HR report Phase 3 (2026-11-24), direct instruction - an approval-gated
+  // HR report (personal columns about someone other than the sender)
+  // carries a RENDER SPEC instead of a pre-built preparedReplyText; actual
+  // rendering is deferred to THIS moment (never approval-creation time)
+  // so a report that sits pending for hours/days always reflects live
+  // employee data. Fully self-contained early return - every other
+  // approval type never sets `pendingReportRender`, so this branch never
+  // runs for them, and nothing below it is touched.
+  if (approval.pendingReportRender) {
+    await removePendingApproval(approval.id);
+    return hrReportService.sendApprovedReport(approval);
+  }
   // A literal owner-edited message (new inline-edit card UI, see
   // forwarded `editedText`) is sent verbatim - never re-narrowed by
   // Claude the way `editInstruction` is. It still goes through the same
@@ -16160,6 +16172,18 @@ async function actOnCatchupTurn({ contactId, name, firstName, text, arrivedAt, s
     await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt, seenAt });
     return { answered: false };
   }
+  if (decision && decision.pendingDocuments) {
+    // HR reports Phase 2 (2026-11-24), direct instruction - same
+    // never-auto gate and fire-and-forget delivery as actOnOfficialTurn's
+    // own identical branch above.
+    if (!(await isNeverAuto(contactId))) {
+      hrReportService.deliverPendingReportDocuments(decision.pendingDocuments).catch((err) => {
+        console.error('[whatsapp] catch-up HR report document delivery crashed for ' + contactId + ': ' + err.message);
+      });
+    }
+    await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: null, outcome: 'hr_report_documents_dispatched', arrivedAt, seenAt });
+    return { answered: true };
+  }
   if (decision && decision.replyText) {
     // LIVE INCIDENT (2026-11, direct instruction - "no reply may appear
     // in the chat as sent unless it went through [the tracked send]") -
@@ -16238,6 +16262,18 @@ async function actOnStuckRecoveryTurn({ contactId, name, firstName, text, firstS
   if (decision && decision.case === 'automatic') {
     await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt: firstSeenAt, seenAt: now });
     return { answered: false };
+  }
+  if (decision && decision.pendingDocuments) {
+    // HR reports Phase 2 (2026-11-24), direct instruction - same
+    // never-auto gate and fire-and-forget delivery as actOnOfficialTurn's
+    // own identical branch above.
+    if (!(await isNeverAuto(contactId))) {
+      hrReportService.deliverPendingReportDocuments(decision.pendingDocuments).catch((err) => {
+        console.error('[whatsapp] stuck-recovery HR report document delivery crashed for ' + contactId + ': ' + err.message);
+      });
+    }
+    await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: null, outcome: 'hr_report_documents_dispatched', arrivedAt: firstSeenAt, seenAt: now });
+    return { answered: true };
   }
   if (decision && decision.replyText) {
     // Same LIVE INCIDENT fix as actOnCatchupTurn's own identical comment
@@ -16748,6 +16784,22 @@ async function pollOnce() {
       await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt, seenAt, typingStartedAt });
       // No reply is going out after all - stop the typing indicator this
       // same turn started (item 2: "stop it if no reply will be sent").
+      if (typingStartedAt) fireAndForgetPresence(contactId, 'paused');
+    } else if (decision && decision.pendingDocuments) {
+      // HR reports Phase 2 (2026-11-24), direct instruction - the
+      // document(s) ARE the reply here (decision.replyText is null by
+      // design); delivery is fire-and-forget (not awaited) so a 30-90s
+      // render+send never blocks this tick's other messages. Never-auto
+      // gated the same as every other decision - no document is
+      // generated or sent for a never-auto-listed sender (no text draft
+      // either, since there is no replyText to hold for manual review;
+      // the sender can simply ask again once never-auto is off).
+      if (!(await isNeverAuto(contactId))) {
+        hrReportService.deliverPendingReportDocuments(decision.pendingDocuments).catch((err) => {
+          console.error('[whatsapp] HR report document delivery crashed for ' + contactId + ': ' + err.message);
+        });
+      }
+      await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: null, outcome: 'hr_report_documents_dispatched', arrivedAt, seenAt, typingStartedAt });
       if (typingStartedAt) fireAndForgetPresence(contactId, 'paused');
     } else if (decision && decision.replyText) {
       // Same LIVE INCIDENT fix as actOnCatchupTurn's own comment -
