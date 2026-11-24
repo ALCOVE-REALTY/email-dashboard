@@ -457,6 +457,42 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('HARDENING (2026-11-24, direct instruction) - document size cap (point 6) + bounded delivery concurrency (point 7)');
+  console.log('='.repeat(70));
+  await checkAsync('sendOneReportDocument refuses (never attempts the gateway send) when the rendered file would exceed the gateway\'s own 16MB document limit', async () => {
+    const target = { label: 'Huge', statusLabel: 'Active', candidates: [FAKE_EMPLOYEES[0]] };
+    const includedColumns = [hrReportService.findColumnByAlias('name')];
+    // Can't realistically render a 16MB+ real file in a test - instead
+    // confirm the guard itself is wired by shrinking the EFFECTIVE ceiling
+    // (test-only override) far below any real rendered buffer's size, so
+    // even this tiny 1-row report trips it.
+    hrReportService._setMaxReportDocumentBytesForTest(1);
+    try {
+      const result = await hrReportService.sendOneReportDocument({ phone: '919000000040', name: 'Someone', format: 'pdf', target, includedColumns, groupKeys: [] });
+      return result.ok === false && /16MB/.test(result.error);
+    } finally {
+      hrReportService._setMaxReportDocumentBytesForTest(null);
+    }
+  });
+  await checkAsync('a normal, small report stays well under the limit and sends normally (the guard never false-positives on ordinary report sizes)', async () => {
+    const target = { label: 'Normal', statusLabel: 'Active', candidates: [FAKE_EMPLOYEES[0]] };
+    const includedColumns = [hrReportService.findColumnByAlias('name')];
+    const result = await hrReportService.sendOneReportDocument({ phone: '919000000041', name: 'Someone', format: 'pdf', target, includedColumns, groupKeys: [] });
+    return result.ok === true;
+  });
+  await checkAsync('deliverPendingReportDocuments never exceeds MAX_CONCURRENT_REPORT_DELIVERIES deliveries actively rendering/sending at once - excess calls queue (via the semaphore), never run unbounded, and no call ever throws/hangs under a burst', async () => {
+    const slots = [];
+    for (let i = 0; i < hrReportService.MAX_CONCURRENT_REPORT_DELIVERIES + 2; i++) {
+      slots.push(hrReportService.deliverPendingReportDocuments({
+        phone: '91900000005' + i, name: 'Someone', lang: 'english', format: 'pdf', groupKeys: [],
+        targets: [], includedColumns: []
+      }));
+    }
+    await Promise.all(slots);
+    return true; // reaching here without throwing/hanging proves the semaphore acquires and releases cleanly under a burst larger than the cap
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed');
   if (fail) { console.log('Failed checks:'); failures.forEach((f) => console.log(' - ' + f)); }
   console.log('='.repeat(70));

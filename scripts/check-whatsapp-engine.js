@@ -7543,6 +7543,31 @@ async function checkAsyncRealModel(label, fn) {
       await cleanupCatchupFixtures(phone).catch(() => {});
     }
   });
+  await checkAsync('HARDENING (2026-11-24), direct instruction, point 8 - a SECOND real instance of the same dual-gateway key-collision bug class: isMessageHandled/markMessageHandled now scope wa-handled-ids by gateway, so an old-gateway-era handled id can never falsely mark a colliding new-gateway id as "already handled"', async () => {
+    const phone = '910000000993';
+    const saved = process.env.WHATSAPP_GATEWAY;
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    try {
+      delete process.env.WHATSAPP_GATEWAY;
+      await whatsappAssistant.markMessageHandled(phone, 28, 'old-gateway-era message'); // old-gateway id 28, already handled
+      process.env.WHATSAPP_GATEWAY = 'new';
+      // THE BUG, if still present: this would read the OLD gateway's set
+      // and find id 28 already handled, even though this is a genuinely
+      // new, never-seen new-gateway message that just happens to share id 28.
+      const falselyHandledUnderNewGateway = await whatsappAssistant.isMessageHandled(phone, 28);
+      await whatsappAssistant.markMessageHandled(phone, 28, 'new-gateway message');
+      const oldGatewaySetStillIntact = Boolean(await redis.sismember('wa-handled-ids:' + phone, 28));
+      const newGatewaySetHasItsOwnEntry = Boolean(await redis.sismember('wa-v1-handled-ids:' + phone, 28));
+      return falselyHandledUnderNewGateway === false && oldGatewaySetStillIntact === true && newGatewaySetHasItsOwnEntry === true;
+    } finally {
+      if (saved === undefined) delete process.env.WHATSAPP_GATEWAY; else process.env.WHATSAPP_GATEWAY = saved;
+      await redis.del('wa-handled-ids:' + phone).catch(() => {});
+      await redis.del('wa-v1-handled-ids:' + phone).catch(() => {});
+      await redis.del('wa-msg-text:' + phone).catch(() => {});
+      await redis.del('wa-v1-msg-text:' + phone).catch(() => {});
+    }
+  });
 
   check('isStaleRepeatedMessage is wired into actOnOfficialTurn (the real-time auto-reply path), checked AFTER isDuplicateIncoming/isBotLoopPattern and BEFORE the message is ever handed to decideAutoReply - source-level, and explicitly scoped OUT of catch-up/actOnCatchupTurn per direct instruction ("catch-up... unaffected")', (() => {
     const fs = require('fs');

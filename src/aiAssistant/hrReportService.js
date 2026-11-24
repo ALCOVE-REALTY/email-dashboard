@@ -621,6 +621,18 @@ async function renderReportBuffer({ title, subtitle, includedColumns, candidates
 // WhatsApp document for one target, draft-mode-aware, never throws (a
 // failure is always reported back as {ok:false, error}, never crashes the
 // caller's loop).
+// HARDENING (2026-11-24), direct instruction, point 6 (memory safety) -
+// the v1 gateway's own documented hard limit is 16MB per document
+// (docs/new-gateway-api.txt) - checked here, BEFORE ever attempting a
+// send, so an oversized report fails fast with a clear reason instead of
+// the gateway rejecting it (or worse) after the upload already happened.
+// Test-only override (`_setMaxReportDocumentBytesForTest`) - a real 16MB+
+// buffer isn't practical to render in a test; lowering the effective
+// ceiling instead lets a test trip the real guard with a tiny fixture.
+const MAX_REPORT_DOCUMENT_BYTES = 16 * 1024 * 1024;
+let maxReportDocumentBytesOverride = null;
+function _setMaxReportDocumentBytesForTest(n) { maxReportDocumentBytesOverride = n; }
+function effectiveMaxReportDocumentBytes() { return maxReportDocumentBytesOverride !== null ? maxReportDocumentBytesOverride : MAX_REPORT_DOCUMENT_BYTES; }
 async function sendOneReportDocument({ phone, name, format, target, includedColumns, groupKeys }) {
   const wa = getWhatsappAssistant();
   const title = target.label || 'HR Report';
@@ -630,6 +642,9 @@ async function sendOneReportDocument({ phone, name, format, target, includedColu
     rendered = await renderReportBuffer({ title, subtitle, includedColumns, candidates: target.candidates, format, groupKeys });
   } catch (err) {
     return { ok: false, error: 'Could not generate the file: ' + err.message };
+  }
+  if (rendered.buffer.length > effectiveMaxReportDocumentBytes()) {
+    return { ok: false, error: 'Report file is ' + (rendered.buffer.length / (1024 * 1024)).toFixed(1) + 'MB, over the gateway\'s 16MB document limit - narrow the filter or split into smaller reports.' };
   }
   const filename = reportBaseName({ targetLabel: target.label, status: target.statusLabel, groupKeys }) + '.' + rendered.ext;
   const caption = reportCaption({ targetLabel: target.label, status: target.statusLabel, count: target.candidates.length, groupKeys });
@@ -644,15 +659,40 @@ async function sendOneReportDocument({ phone, name, format, target, includedColu
   await recordReportSent({ phone, name, targetLabel: target.label, groupKeys, format, rowCount: target.candidates.length, columnsLabel: includedColumns.map((c) => c.label).join(', ') }).catch(() => {});
   return { ok: true, filename };
 }
+// HARDENING (2026-11-24), direct instruction, point 7 (concurrency
+// limits) - deliverPendingReportDocuments is called fire-and-forget from
+// the WhatsApp dispatcher, so several DIFFERENT senders asking for
+// reports in the same poll tick would otherwise spawn that many fully
+// concurrent render+send operations with no bound at all. A simple
+// process-wide semaphore caps how many deliveries actually render/send at
+// once; anything over the cap just waits its turn in a plain in-memory
+// queue - the dispatcher itself is never blocked (acquire/release happen
+// entirely inside the fire-and-forget call), only the EXCESS report work
+// is paced.
+const MAX_CONCURRENT_REPORT_DELIVERIES = 3;
+let activeReportDeliveries = 0;
+const reportDeliveryWaiters = [];
+async function acquireReportDeliverySlot() {
+  if (activeReportDeliveries < MAX_CONCURRENT_REPORT_DELIVERIES) { activeReportDeliveries++; return; }
+  await new Promise((resolve) => reportDeliveryWaiters.push(resolve));
+  activeReportDeliveries++;
+}
+function releaseReportDeliverySlot() {
+  activeReportDeliveries--;
+  const next = reportDeliveryWaiters.shift();
+  if (next) next();
+}
 // Called (fire-and-forget) from the WhatsApp dispatcher ONLY after the
 // never-auto gate has already passed - never generates/sends anything for
-// a never-auto-listed sender. Concurrent sends across targets (not
-// sequential) so a 2-3 site request stays within the "Total <= 60s, max
-// 90s" budget - total latency is bounded by the slowest single send, not
-// their sum. The 30s interim "report ready" line is a cancellable timer,
-// not a hard abort - the real work is never killed early.
+// a never-auto-listed sender. Concurrent sends ACROSS TARGETS of the SAME
+// request (not sequential) so a 2-3 site request stays within the "Total
+// <= 60s, max 90s" budget - total latency is bounded by the slowest
+// single send, not their sum. The 30s interim "report ready" line is a
+// cancellable timer, not a hard abort - the real work is never killed
+// early.
 async function deliverPendingReportDocuments(spec) {
   const wa = getWhatsappAssistant();
+  await acquireReportDeliverySlot();
   let settled = false;
   const interimTimer = setTimeout(() => {
     if (settled) return;
@@ -667,6 +707,7 @@ async function deliverPendingReportDocuments(spec) {
   } finally {
     settled = true;
     clearTimeout(interimTimer);
+    releaseReportDeliverySlot();
   }
 }
 // Approval-gated path (Phase 3) - rendering is deferred to THIS moment
@@ -690,15 +731,24 @@ async function sendApprovedReport(approval) {
   if (!wa.isRealSendAllowedFor(approval.phone)) {
     return '[DRAFT MODE] ' + approval.name + '-ke HR report pathano hoto (' + totalCandidates + ' row(s)).';
   }
-  const outcomes = [];
-  for (const t of targets) {
-    outcomes.push(await sendOneReportDocument({ phone: approval.phone, name: approval.name, format: spec.format, target: t, includedColumns, groupKeys: spec.groupKeys }));
+  // Same concurrency gate as deliverPendingReportDocuments (point 7) - the
+  // owner could resolve several pending report approvals in quick
+  // succession; this just paces the excess rather than letting an
+  // unbounded number render at once.
+  await acquireReportDeliverySlot();
+  try {
+    const outcomes = [];
+    for (const t of targets) {
+      outcomes.push(await sendOneReportDocument({ phone: approval.phone, name: approval.name, format: spec.format, target: t, includedColumns, groupKeys: spec.groupKeys }));
+    }
+    const failed = outcomes.filter((o) => !o.ok);
+    if (failed.length) {
+      return '⚠️ ' + approval.name + '-ke report pathate giye kichu file-e error holo: ' + failed.map((o) => o.error).join('; ');
+    }
+    return '✓ ' + approval.name + '-ke HR report (' + totalCandidates + ' row(s)) pathano holo.';
+  } finally {
+    releaseReportDeliverySlot();
   }
-  const failed = outcomes.filter((o) => !o.ok);
-  if (failed.length) {
-    return '⚠️ ' + approval.name + '-ke report pathate giye kichu file-e error holo: ' + failed.map((o) => o.error).join('; ');
-  }
-  return '✓ ' + approval.name + '-ke HR report (' + totalCandidates + ' row(s)) pathano holo.';
 }
 
 // ---------------- Orchestration ----------------
@@ -891,6 +941,10 @@ module.exports = {
   getFormatPreference,
   recordReportSent,
   listReportsSentLog,
+  MAX_REPORT_DOCUMENT_BYTES,
+  MAX_CONCURRENT_REPORT_DELIVERIES,
+  sendOneReportDocument,
+  _setMaxReportDocumentBytesForTest,
   // Lower-level orchestration steps - test-only (handleHrReportRequest's
   // own deps.extract seam is the normal way to drive the full pipeline;
   // these are exposed for finer-grained unit tests of one stage alone).

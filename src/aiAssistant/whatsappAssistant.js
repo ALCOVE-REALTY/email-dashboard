@@ -16006,10 +16006,27 @@ async function computeCatchupGapWindow(trigger, now) {
 // write, so this can never grow unbounded for a long-lived contact.
 const HANDLED_IDS_PREFIX = 'wa-handled-ids:';
 const HANDLED_IDS_TTL_SECONDS = 30 * 24 * 60 * 60;
+// HARDENING (2026-11-24), direct instruction, point 8 (per-gateway state
+// key audit) - a SECOND real instance of the exact same bug class as
+// wa-last-seen: this SET is keyed by the gateway's own raw message `id`,
+// and old/new-gateway ids are different numbering spaces (old-gateway ids
+// are large/historical, new-gateway ids restart small from its own
+// counter). Within this set's own 30-day TTL, a new-gateway message could
+// be assigned an id that collides with a stale old-gateway id already
+// recorded here, silently marking a genuinely NEW message as "already
+// handled" and dropping it. Scoped exactly like lastSeenKey() - gateway=
+// old keeps reading/writing the exact same key as always (zero change for
+// it), gateway=new gets its own, starting genuinely fresh.
+function handledIdsKey(contactId) {
+  return gatewayModeV1.isNewGatewayEnabled() ? ('wa-v1-handled-ids:' + contactId) : (HANDLED_IDS_PREFIX + contactId);
+}
+function messageTextKey(contactId) {
+  return gatewayModeV1.isNewGatewayEnabled() ? ('wa-v1-msg-text:' + contactId) : (MESSAGE_TEXT_PREFIX + contactId);
+}
 async function isMessageHandled(contactId, id) {
   const redis = getClient();
   if (!redis) return false;
-  try { return Boolean(await redis.sismember(HANDLED_IDS_PREFIX + contactId, id)); } catch (err) { return false; }
+  try { return Boolean(await redis.sismember(handledIdsKey(contactId), id)); } catch (err) { return false; }
 }
 // Live review item 8 - the text seen for this id at handling time, kept
 // alongside the handled-ids SET (same TTL). A WhatsApp edit keeps the
@@ -16022,22 +16039,22 @@ const MESSAGE_TEXT_PREFIX = 'wa-msg-text:';
 async function getStoredMessageText(contactId, id) {
   const redis = getClient();
   if (!redis) return null;
-  try { return await redis.hget(MESSAGE_TEXT_PREFIX + contactId, String(id)); } catch (err) { return null; }
+  try { return await redis.hget(messageTextKey(contactId), String(id)); } catch (err) { return null; }
 }
 async function storeMessageText(contactId, id, text) {
   const redis = getClient();
   if (!redis || !text) return;
   try {
-    await redis.hset(MESSAGE_TEXT_PREFIX + contactId, { [String(id)]: text });
-    await redis.expire(MESSAGE_TEXT_PREFIX + contactId, HANDLED_IDS_TTL_SECONDS);
+    await redis.hset(messageTextKey(contactId), { [String(id)]: text });
+    await redis.expire(messageTextKey(contactId), HANDLED_IDS_TTL_SECONDS);
   } catch (err) { /* best effort */ }
 }
 async function markMessageHandled(contactId, id, text) {
   const redis = getClient();
   if (!redis) return;
   try {
-    await redis.sadd(HANDLED_IDS_PREFIX + contactId, id);
-    await redis.expire(HANDLED_IDS_PREFIX + contactId, HANDLED_IDS_TTL_SECONDS);
+    await redis.sadd(handledIdsKey(contactId), id);
+    await redis.expire(handledIdsKey(contactId), HANDLED_IDS_TTL_SECONDS);
   } catch (err) { /* best effort */ }
   if (text) await storeMessageText(contactId, id, text);
 }
