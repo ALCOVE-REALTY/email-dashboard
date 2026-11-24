@@ -275,6 +275,20 @@ async function resetGatewayV1BadCount() {
   if (!redis) return;
   await redis.del(GATEWAY_V1_CONSECUTIVE_BAD_KEY).catch(() => {});
 }
+// HARDENING (2026-11-24), direct instruction, point 5 (circuit breaker) -
+// a cheap read of the SAME durable counter checkGatewayV1Session itself
+// uses to decide whether to alert, so "gateway confirmed bad enough to
+// pause non-urgent work" always means exactly the same thing as "gateway
+// bad enough to have alerted" - never two independently-drifting
+// definitions of "bad" for the same underlying signal.
+async function isGatewayConsecutivelyBad() {
+  const redis = getRawRedisClient();
+  if (!redis) return false;
+  try {
+    const count = Number(await redis.get(GATEWAY_V1_CONSECUTIVE_BAD_KEY)) || 0;
+    return count >= GATEWAY_V1_CONFIRM_THRESHOLD;
+  } catch (err) { return false; }
+}
 async function checkGatewayV1Session() {
   if (!gatewayModeV1.isNewGatewayEnabled()) return { ok: true, note: 'new gateway not enabled' };
   const callStartedAt = Date.now();
@@ -664,5 +678,6 @@ async function runHealthCheck() {
 module.exports = {
   runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat, checkSendFlushHeartbeat, checkFailedSends,
   checkKvLatency, checkEventLoopLag, checkAiFallbackStreak, checkGatewayV1Session, getLatestGatewayV1Session, startMetricsLog, getLatestMetrics, recordKvLatency, kvLatencyP95Ms,
-  getAlertDebounceState, setAlertDebounceState
+  getAlertDebounceState, setAlertDebounceState,
+  isGatewayConsecutivelyBad
 };

@@ -52,6 +52,36 @@ function isDown() {
   return Boolean(lastFailure);
 }
 
+// HARDENING (2026-11-24), direct instruction, point 5 (circuit breaker) -
+// "on repeated failures, pause non-urgent jobs, keep critical replies
+// flowing, auto-recover." PAUSE_THRESHOLD requires several CONSECUTIVE
+// failures (never a single blip) before non-urgent work backs off; it
+// auto-recovers the instant any read/write succeeds again (recordSuccess
+// resets consecutiveFailures to 0 unconditionally) - no separate timer or
+// half-open state needed, since the critical reply pipeline's OWN reads/
+// writes keep trying every tick regardless and are exactly what flips
+// this back to healthy the moment Redis genuinely recovers.
+const PAUSE_NON_URGENT_THRESHOLD = 3;
+function shouldPauseNonUrgentWork() {
+  return consecutiveFailures >= PAUSE_NON_URGENT_THRESHOLD;
+}
+
+// "Unable to parse response body" (direct instruction) - a known
+// transient failure mode of the Upstash REST client when the underlying
+// HTTP response body is malformed/incomplete, distinct from a real outage
+// (the server very likely DID process the request; only OUR read of its
+// response failed). Retrying is safe for READS unconditionally (no side
+// effects either way) - guardedRead below retries once automatically.
+// WRITES are retried only when the caller explicitly marks the operation
+// idempotent (set/del/expire/hset/sadd/srem - calling twice with the same
+// inputs produces the same end state) via `{ idempotent: true }`, since
+// blindly retrying a non-idempotent write (lpush/rpush/incr/decr) risks
+// duplicating an effect that may have already landed server-side before
+// the response merely failed to parse.
+function isTransientParseError(err) {
+  return /unable to parse response body/i.test(String((err && err.message) || err || ''));
+}
+
 // A synthetic system-strip notice - NOT read from Redis (it can't be,
 // that's exactly what's down) - injected directly by the
 // communications-summary route alongside the real (Redis-backed) ones.
@@ -68,12 +98,27 @@ function currentNotice() {
 // caller (a saveReminder/markDone/savePendingApproval/... function) stops
 // swallowing it into a silent no-op and instead lets it propagate up to
 // the route, same as any other real error.
-async function guardedWrite(fn) {
+async function guardedWrite(fn, opts) {
   try {
     const result = await fn();
     recordSuccess();
     return result;
   } catch (err) {
+    // Point 5 - "Unable to parse response body" retried safely, but ONLY
+    // for a write the caller explicitly marked idempotent (see
+    // isTransientParseError's own comment for why this can't be
+    // unconditional). One retry only - a second parse failure in a row is
+    // treated as a real failure, not retried again.
+    if (opts && opts.idempotent && isTransientParseError(err)) {
+      try {
+        const result = await fn();
+        recordSuccess();
+        return result;
+      } catch (err2) {
+        recordWriteFailure(err2);
+        throw err2;
+      }
+    }
     recordWriteFailure(err);
     throw err;
   }
@@ -83,13 +128,24 @@ async function guardedWrite(fn) {
 // read failure keeps its existing fail-soft contract: return `fallback`,
 // same as the try/catch it's replacing already did) - it only ADDS
 // reporting the failure here, so it surfaces in the System strip instead
-// of vanishing silently.
+// of vanishing silently. "Unable to parse response body" is retried once,
+// unconditionally - always safe for a read (no side effects either way).
 async function guardedRead(fn, fallback) {
   try {
     const result = await fn();
     recordSuccess();
     return result;
   } catch (err) {
+    if (isTransientParseError(err)) {
+      try {
+        const result = await fn();
+        recordSuccess();
+        return result;
+      } catch (err2) {
+        recordReadFailure(err2);
+        return fallback;
+      }
+    }
     recordReadFailure(err);
     return fallback;
   }
@@ -98,5 +154,6 @@ async function guardedRead(fn, fallback) {
 module.exports = {
   recordWriteFailure, recordWriteSuccess,
   recordReadFailure, recordReadSuccess,
-  isDown, currentNotice, guardedWrite, guardedRead
+  isDown, currentNotice, guardedWrite, guardedRead,
+  shouldPauseNonUrgentWork, isTransientParseError
 };

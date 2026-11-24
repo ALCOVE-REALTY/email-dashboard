@@ -196,6 +196,27 @@ async function main() {
     await thirdMaintenanceRun;
     check('once the first maintenance tick finishes, a later tick runs normally again (the guard resets, never stuck "running" forever)', dailySummaryCallCount === 2, 'calls after first finished: ' + dailySummaryCallCount);
 
+    // HARDENING (2026-11-24), direct instruction, point 5 (circuit
+    // breaker) - "on repeated failures, pause non-urgent jobs... auto-
+    // recover." The maintenance tick IS the non-urgent bucket (the live
+    // reply pipeline is on the separate fast ticks, unaffected) - checked
+    // directly against the real redisHealth module (no mock needed, its
+    // own in-memory counters are exactly what this is testing).
+    await (async () => {
+      const redisHealth = require('../src/redisHealth');
+      redisHealth.recordWriteFailure(new Error('simulated'));
+      redisHealth.recordWriteFailure(new Error('simulated'));
+      redisHealth.recordWriteFailure(new Error('simulated'));
+      dailySummaryCallCount = 0;
+      await maintenanceEntry.fn();
+      check('direct instruction - several consecutive Redis failures pause the WHOLE maintenance tick (none of its jobs run), never a partial/guessed subset', dailySummaryCallCount === 0, 'calls while paused: ' + dailySummaryCallCount);
+      redisHealth.recordWriteSuccess();
+      releaseDailySummary = null;
+      whatsappAssistant.checkAndPostDailySummary = async () => { dailySummaryCallCount++; };
+      await maintenanceEntry.fn();
+      check('direct instruction - "auto-recover" - the moment Redis succeeds again, the very next maintenance tick runs normally, no separate reset step needed', dailySummaryCallCount === 1, 'calls after recovery: ' + dailySummaryCallCount);
+    })();
+
     if (handle && handle.stop) handle.stop();
 
     // LIVE INCIDENT (2026-11, direct instruction) - "every scheduled job

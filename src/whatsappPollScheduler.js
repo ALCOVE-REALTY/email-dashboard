@@ -18,6 +18,7 @@ const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
 const settingsHealthCheck = require('./aiAssistant/settingsHealthCheck');
 const togetherWeCanService = require('./aiAssistant/togetherWeCanService');
 const systemHealthMonitor = require('./aiAssistant/systemHealthMonitor');
+const redisHealth = require('./redisHealth');
 const attendanceRequestService = require('./aiAssistant/attendanceRequestService');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
@@ -627,6 +628,25 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   }, AUTOSEND_FLUSH_MS);
 
   async function runMaintenanceTick(log) {
+    // HARDENING (2026-11-24), direct instruction, point 5 (circuit
+    // breaker) - "on repeated failures, pause non-urgent jobs, keep
+    // critical replies flowing, auto-recover." Every job in this tick is
+    // already, by construction, the non-urgent bucket (the live reply
+    // pipeline runs on the separate, fast main-poll/send-flush ticks,
+    // completely untouched by this check) - so gating the WHOLE tick on
+    // either signal being confirmed bad is simpler and safer than picking
+    // individual jobs to skip, and auto-recovers the instant either signal
+    // clears (no separate timer/half-open state: redisHealth's own
+    // consecutiveFailures resets on any success, and the gateway counter
+    // resets the moment checkGatewayV1Session sees a healthy reading).
+    if (redisHealth.shouldPauseNonUrgentWork()) {
+      log.log('[whatsapp-assistant] maintenance tick paused - Redis has failed ' + 'several consecutive times (circuit breaker, point 5) - critical reply ticks are unaffected');
+      return;
+    }
+    if (await systemHealthMonitor.isGatewayConsecutivelyBad()) {
+      log.log('[whatsapp-assistant] maintenance tick paused - gateway confirmed bad (circuit breaker, point 5) - critical reply ticks are unaffected');
+      return;
+    }
     // LIVE INCIDENT (2026-11, direct instruction) - every job below now
     // runs through runMaintenanceJob (timeout + per-job backoff +
     // heartbeat, see its own comment above) instead of a bare try/catch -
