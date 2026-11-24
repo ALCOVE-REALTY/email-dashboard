@@ -6275,6 +6275,63 @@ async function checkAsyncRealModel(label, fn) {
     }
   });
 
+  console.log('='.repeat(70));
+  console.log('Company Location names (2026-11-24, direct instruction) - full parity with site/department aliases, for the HR sheet\'s OWN "Company Location" column');
+  console.log('='.repeat(70));
+  await checkAsync('LOCKED SCENARIO: scanForNewCompanyLocs() flags a Company Location value never seen before, confirmNewCompanyLoc saves a real, confirmed-usable alias', async () => {
+    const unknownValue = 'Brand-New-Test-CompanyLoc-' + Date.now();
+    const origGetData = employeeService.getEmployeeData;
+    await whatsappAssistant.scanForNewCompanyLocs();
+    const empMock = { employees: [{ companyLocation: unknownValue }, { companyLocation: 'Existing-Value' }] };
+    employeeService.getEmployeeData = async () => empMock;
+    try {
+      const flagged = await whatsappAssistant.scanForNewCompanyLocs();
+      const found = flagged.find((f) => f.companyLocationValue === unknownValue);
+      if (!found) return false;
+      const stillOnlyOne = (await whatsappAssistant.scanForNewCompanyLocs()).filter((f) => f.companyLocationValue === unknownValue).length === 1;
+      if (!stillOnlyOne) return false;
+      await whatsappAssistant.confirmNewCompanyLoc(unknownValue, ['Test Alias For New CompanyLoc']);
+      const afterConfirm = await whatsappAssistant.scanForNewCompanyLocs();
+      const stillFlagged = afterConfirm.some((f) => f.companyLocationValue === unknownValue);
+      const aliasSaved = (await whatsappAssistant.listCompanyLocAliases()).some((a) => a.alias === 'Test Alias For New CompanyLoc' && a.companyLocationValue === unknownValue);
+      await whatsappAssistant.refreshCompanyLocAliasCacheNow();
+      const resolved = whatsappAssistant.resolveCompanyLocationAliasValues('Test Alias For New CompanyLoc');
+      const cleanupAlias = (await whatsappAssistant.listCompanyLocAliases()).find((a) => a.alias === 'Test Alias For New CompanyLoc');
+      if (cleanupAlias) await whatsappAssistant.deleteCompanyLocAlias(cleanupAlias.id);
+      await whatsappAssistant.refreshCompanyLocAliasCacheNow();
+      return !stillFlagged && aliasSaved && resolved.includes(unknownValue);
+    } finally {
+      employeeService.getEmployeeData = origGetData;
+    }
+  });
+  await checkAsync('LOCKED SCENARIO: declineNewCompanyLoc() - same guarantee as declineNewSite/declineNewDept, for Company Location values', async () => {
+    const unknownValue = 'Brand-New-Decline-CompanyLoc-' + Date.now();
+    const origGetData = employeeService.getEmployeeData;
+    await whatsappAssistant.scanForNewCompanyLocs();
+    const empMock = { employees: [{ companyLocation: unknownValue }, { companyLocation: 'Existing-Value' }] };
+    employeeService.getEmployeeData = async () => empMock;
+    try {
+      const flagged = await whatsappAssistant.scanForNewCompanyLocs();
+      if (!flagged.some((f) => f.companyLocationValue === unknownValue)) return false;
+      await whatsappAssistant.declineNewCompanyLoc(unknownValue);
+      const afterDecline = await whatsappAssistant.scanForNewCompanyLocs();
+      const stillFlagged = afterDecline.some((f) => f.companyLocationValue === unknownValue);
+      const noAliasSaved = !(await whatsappAssistant.listCompanyLocAliases()).some((a) => a.companyLocationValue === unknownValue);
+      return !stillFlagged && noAliasSaved;
+    } finally {
+      employeeService.getEmployeeData = origGetData;
+    }
+  });
+  await checkAsync('saveCompanyLocAlias/deleteCompanyLocAlias both feed Settings history/audit log, same as site/dept aliases', async () => {
+    const settingsAuditLog = require('../src/aiAssistant/settingsAuditLog');
+    const before = await settingsAuditLog.listSettingsAudit('companyloc-alias').catch(() => []);
+    const saved = await whatsappAssistant.saveCompanyLocAlias({ alias: 'Audit Test CompanyLoc Alias', companyLocationValue: 'Audit-Test-Value', confirmed: true });
+    await whatsappAssistant.deleteCompanyLocAlias(saved.id);
+    await whatsappAssistant.refreshCompanyLocAliasCacheNow();
+    const after = await settingsAuditLog.listSettingsAudit('companyloc-alias').catch(() => []);
+    return after.length >= before.length + 2 && after.some((e) => e.action === 'saved' && e.id === saved.id) && after.some((e) => e.action === 'deleted' && e.id === saved.id);
+  });
+
   // --- Item 1: CV/job-application messages and media-only messages always get acknowledged ---
   check('looksLikeCvMessage recognizes the exact replayed CV text', whatsappAssistant.looksLikeCvMessage('Good morning, Sir. I have shared my CV for a suitable position in your company. Kindly review my CV and let me know if there is any suitable vacancy. Thank you, Sir.'));
   check('looksLikeCvMessage does NOT misfire on an ordinary greeting', !whatsappAssistant.looksLikeCvMessage('Good morning Sir, kemon achen?'));

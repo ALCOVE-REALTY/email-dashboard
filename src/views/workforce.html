@@ -2778,6 +2778,22 @@
             <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </span>
         </button>
+        <!-- Company location names (2026-11-24, direct instruction) - full
+             parity with Site/Department names above, for the HR sheet's
+             own "Company Location" column. -->
+        <button type="button" class="wf-hub-tile wf-hub-tile--compact" id="subhSettingsCompanyLocNamesBtn" style="margin-top:10px">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">Company location names</span>
+            <span class="wf-hub-tile-sub">Colloquial names matched to the HR Master's Company Location column</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <span class="wf-hub-tile-badge wi-count-badge danger" id="hrCompanyLocAliasesBadge" hidden></span>
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
         <!-- TASK 1(e) (2026-11), direct instruction - "Company details":
              letter-facing fields (code/address/CIN/phone/email/website)
              for each real Company value already in the HR data, plus one
@@ -3156,6 +3172,49 @@
         <div class="wf-rem-sheet-foot">
           <button type="button" class="wf-ai-action-btn outline" id="hrDeptAliasSheetCancelBtn">Cancel</button>
           <button type="button" class="wf-ai-action-btn download" id="hrDeptAliasSheetSaveBtn"><span>Save</span></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="companyLocAliasesView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Company location names</h2>
+      </div>
+      <!-- Company location names (2026-11-24, direct instruction) - full
+           parity with Site names/Department names above, for the HR
+           sheet's OWN "Company Location" column (distinct from Working
+           Location) - "Sangam" lives here in the real sheet, not in
+           Working Location, which is exactly why HR reports could give 0
+           rows for it before this existed. Every id below mirrors its
+           Site names counterpart one-for-one. -->
+      <div class="wf-comms-page" id="hrCompanyLocAliasesPage">
+        <div class="wf-rem-list" id="hrNewCompanyLocsList"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Company location names</span>
+          <button type="button" class="plain" id="hrCompanyLocAliasAddBtn">+ Add</button>
+        </div>
+        <div class="wf-rem-list" id="hrCompanyLocAliasesList"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrCompanyLocAliasSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrCompanyLocAliasSheet" hidden role="dialog" aria-label="Add or edit a company location name group">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrCompanyLocAliasSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrCompanyLocAliasSheetTitle">Add a new group</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Company Location value (as it appears in the HR Master)</span><input type="text" id="hrCompanyLocAliasValueInput" placeholder="e.g. New Kolkata - Sangam B" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Colloquial names (comma-separated)</span><input type="text" id="hrCompanyLocAliasInput" placeholder="e.g. Sangam, Sangam B" autocomplete="off" /></label>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrCompanyLocAliasSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrCompanyLocAliasSheetSaveBtn"><span>Save</span></button>
         </div>
       </div>
     </section>

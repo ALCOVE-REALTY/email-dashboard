@@ -6681,6 +6681,198 @@ function hintMatchesDeptAliasSync(department, hint) {
   }
   return false;
 }
+// HR reports, direct instruction (2026-11-24) - "Company Location names":
+// full parity with site/department aliases above - same owner-editable
+// map + auto-detection of never-seen Company Location values, now for
+// the HR sheet's OWN "Company Location" column, distinct from "Working
+// Location" (the field site-aliases above already cover). Live bug this
+// fixes: "Sangam" is stored in the Company Location column in the real
+// sheet, not Working Location - the old code only ever checked Working
+// Location, so it resolved to 0 rows. Every function below is the exact
+// same shape as its department-alias counterpart just above - see each
+// one's own comment there for the full rationale (not repeated here).
+const COMPANY_LOC_ALIAS_PREFIX = 'subh-companyloc-alias:';
+const COMPANY_LOC_ALIAS_IDS_KEY = 'subh-companyloc-alias-ids';
+function newCompanyLocAliasId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+async function saveCompanyLocAlias(data) {
+  const redis = getClient();
+  if (!redis) return null;
+  const id = data.id || newCompanyLocAliasId();
+  const record = { id, alias: data.alias, companyLocationValue: data.companyLocationValue, confirmed: data.confirmed !== false, createdAt: data.createdAt || Date.now() };
+  const before = await getCompanyLocAlias(id);
+  try {
+    await redis.set(COMPANY_LOC_ALIAS_PREFIX + id, JSON.stringify(record));
+    await redis.sadd(COMPANY_LOC_ALIAS_IDS_KEY, id);
+  } catch (err) { return null; }
+  await settingsAuditLog.logSettingsAudit('companyloc-alias', { action: 'saved', id, before, after: record, source: 'owner-ui' });
+  return record;
+}
+async function getCompanyLocAlias(id) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(COMPANY_LOC_ALIAS_PREFIX + id);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function listCompanyLocAliases() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(COMPANY_LOC_ALIAS_IDS_KEY);
+    if (!ids || !ids.length) return [];
+    const records = await Promise.all(ids.map((id) => getCompanyLocAlias(id)));
+    return records.filter(Boolean).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  } catch (err) { return []; }
+}
+async function deleteCompanyLocAlias(id) {
+  const redis = getClient();
+  if (!redis) return false;
+  const before = await getCompanyLocAlias(id);
+  try {
+    await redis.del(COMPANY_LOC_ALIAS_PREFIX + id);
+    await redis.srem(COMPANY_LOC_ALIAS_IDS_KEY, id);
+  } catch (err) { return false; }
+  await settingsAuditLog.logSettingsAudit('companyloc-alias', { action: 'deleted', id, before, after: null, source: 'owner-ui' });
+  return true;
+}
+let companyLocAliasCache = [];
+let companyLocAliasCacheAt = 0;
+let companyLocAliasCacheRefreshing = false;
+const COMPANY_LOC_ALIAS_CACHE_TTL_MS = 30 * 1000;
+function refreshCompanyLocAliasCacheIfStale() {
+  if (companyLocAliasCacheRefreshing || Date.now() - companyLocAliasCacheAt < COMPANY_LOC_ALIAS_CACHE_TTL_MS) return;
+  companyLocAliasCacheRefreshing = true;
+  listCompanyLocAliases().then((all) => {
+    companyLocAliasCache = all.filter((a) => a.confirmed);
+    companyLocAliasCacheAt = Date.now();
+  }).catch(() => {}).finally(() => { companyLocAliasCacheRefreshing = false; });
+}
+async function refreshCompanyLocAliasCacheNow() {
+  const all = await listCompanyLocAliases().catch(() => []);
+  companyLocAliasCache = all.filter((a) => a.confirmed);
+  companyLocAliasCacheAt = Date.now();
+}
+// Resolves a free-text Company Location mention (e.g. "Sangam") to its
+// real Company Location value(s) - same confirmed-alias cache/word-
+// matching as resolveSiteAliasValues/resolveDeptAliasValues, but for the
+// sheet's Company Location column. Used by hrReportService.js ALONGSIDE
+// resolveSiteAliasValues (never instead of it) - a location-type hint
+// resolves against BOTH Working Location and Company Location, since
+// which column a given place name actually lives in varies by site.
+function resolveCompanyLocationAliasValues(hint) {
+  refreshCompanyLocAliasCacheIfStale();
+  const normHint = normalizeForMatch(hint);
+  if (!normHint) return [];
+  const hintWords = normHint.split(' ').filter(Boolean);
+  const values = new Set();
+  for (const a of companyLocAliasCache) {
+    const normAlias = normalizeForMatch(a.alias);
+    if (!normAlias) continue;
+    const aliasWords = normAlias.split(' ').filter(Boolean);
+    const aliasIsHint = aliasWords.length > 0 && aliasWords.every((aw) => hintWords.some((hw) => siteWordsFuzzyMatch(hw, aw)));
+    if (aliasIsHint) values.add(a.companyLocationValue);
+  }
+  return Array.from(values);
+}
+const COMPANY_LOC_KNOWN_VALUES_KEY = 'subh-companyloc-known-values';
+async function seedKnownCompanyLocValuesIfEmpty() {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const existing = await redis.smembers(COMPANY_LOC_KNOWN_VALUES_KEY);
+    if (existing && existing.length) return;
+    const { employees } = await employeeService.getEmployeeData();
+    const values = Array.from(new Set(employees.map((e) => e.companyLocation).filter(Boolean)));
+    if (values.length) await redis.sadd(COMPANY_LOC_KNOWN_VALUES_KEY, ...values);
+  } catch (err) { /* best effort - worst effect is one extra "new company location" card */ }
+}
+// No common suffix pattern to strip for a Company Location value (unlike
+// department's "-dept" stripping) - this exists purely for structural
+// parity with suggestedAliasesForDept; the owner types their own alias
+// words on the Confirm card either way.
+function suggestedAliasesForCompanyLoc(value) { return []; }
+const NEW_COMPANY_LOC_FOUND_PREFIX = 'subh-new-companyloc-found:';
+const NEW_COMPANY_LOC_FOUND_IDS_KEY = 'subh-new-companyloc-found-ids';
+async function scanForNewCompanyLocs() {
+  const redis = getClient();
+  if (!redis) return [];
+  await seedKnownCompanyLocValuesIfEmpty();
+  const { employees } = await employeeService.getEmployeeData();
+  const values = Array.from(new Set(employees.map((e) => e.companyLocation).filter(Boolean)));
+  const known = new Set((await redis.smembers(COMPANY_LOC_KNOWN_VALUES_KEY).catch(() => [])) || []);
+  const unknown = values.filter((v) => !known.has(v));
+  for (const v of unknown) {
+    const key = NEW_COMPANY_LOC_FOUND_PREFIX + normalizeForMatch(v);
+    const already = await redis.get(key).catch(() => null);
+    if (already) continue;
+    const record = { companyLocationValue: v, suggestedAliases: suggestedAliasesForCompanyLoc(v), flaggedAt: Date.now() };
+    try {
+      await redis.set(key, JSON.stringify(record));
+      await redis.sadd(NEW_COMPANY_LOC_FOUND_IDS_KEY, normalizeForMatch(v));
+    } catch (err) { /* best effort - picked up again on the next scan */ }
+  }
+  return listNewCompanyLocsFound();
+}
+async function listNewCompanyLocsFound() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const keys = await redis.smembers(NEW_COMPANY_LOC_FOUND_IDS_KEY);
+    if (!keys || !keys.length) return [];
+    const records = await Promise.all(keys.map((k) => redis.get(NEW_COMPANY_LOC_FOUND_PREFIX + k).then((raw) => raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null)));
+    return records.filter(Boolean).sort((a, b) => (b.flaggedAt || 0) - (a.flaggedAt || 0));
+  } catch (err) { return []; }
+}
+async function confirmNewCompanyLoc(companyLocationValue, aliasWords) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.sadd(COMPANY_LOC_KNOWN_VALUES_KEY, companyLocationValue);
+    await redis.del(NEW_COMPANY_LOC_FOUND_PREFIX + normalizeForMatch(companyLocationValue));
+    await redis.srem(NEW_COMPANY_LOC_FOUND_IDS_KEY, normalizeForMatch(companyLocationValue));
+  } catch (err) { return false; }
+  for (const alias of (aliasWords || [])) {
+    if (alias && alias.trim()) await saveCompanyLocAlias({ alias: alias.trim(), companyLocationValue, confirmed: true });
+  }
+  await refreshCompanyLocAliasCacheNow();
+  return true;
+}
+async function declineNewCompanyLoc(companyLocationValue) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.sadd(COMPANY_LOC_KNOWN_VALUES_KEY, companyLocationValue);
+    await redis.del(NEW_COMPANY_LOC_FOUND_PREFIX + normalizeForMatch(companyLocationValue));
+    await redis.srem(NEW_COMPANY_LOC_FOUND_IDS_KEY, normalizeForMatch(companyLocationValue));
+  } catch (err) { return false; }
+  return true;
+}
+// No known defaults to seed (unlike site/dept aliases, which had a few
+// confirmed real-world examples already) - every live Company Location
+// value starts as a "new company location found" card for the owner to
+// confirm/alias (or decline) via SUBH Settings. Kept as a function for
+// structural parity and in case defaults are added later.
+const DEFAULT_COMPANY_LOC_ALIAS_GROUPS = [];
+async function ensureDefaultCompanyLocAliasesSeeded() {
+  const redis = getClient();
+  if (!redis) return;
+  const existing = await listCompanyLocAliases().catch(() => []);
+  const existingKeys = new Set(existing.map((a) => normalizeForMatch(a.alias) + '|' + normalizeForMatch(a.companyLocationValue)));
+  let seededAny = false;
+  for (const g of DEFAULT_COMPANY_LOC_ALIAS_GROUPS) {
+    for (const alias of g.aliases) {
+      const k = normalizeForMatch(alias) + '|' + normalizeForMatch(g.companyLocationValue);
+      if (existingKeys.has(k)) continue;
+      await saveCompanyLocAlias({ alias, companyLocationValue: g.companyLocationValue, confirmed: true });
+      seededAny = true;
+    }
+  }
+  if (seededAny) await refreshCompanyLocAliasCacheNow();
+}
+
 // ALSO tries the confirmed site-alias map for the location field and the
 // confirmed department-alias map for the department field - a hint like
 // "QC" or "Serampore" resolves through its own alias group, spelling-
@@ -17808,6 +18000,17 @@ module.exports = {
   ensureDefaultDeptAliasesSeeded,
   refreshDeptAliasCacheNow,
   resolveDeptAliasValues,
+  saveCompanyLocAlias,
+  getCompanyLocAlias,
+  listCompanyLocAliases,
+  deleteCompanyLocAlias,
+  scanForNewCompanyLocs,
+  listNewCompanyLocsFound,
+  confirmNewCompanyLoc,
+  declineNewCompanyLoc,
+  ensureDefaultCompanyLocAliasesSeeded,
+  refreshCompanyLocAliasCacheNow,
+  resolveCompanyLocationAliasValues,
   closeOpenHrConfirmation,
   resolveHrNoteThirdParty,
   finalizeHrNoteThirdParty,

@@ -207,6 +207,17 @@ async function resolveLocationFilter(hint) {
   if (typeof wa.resolveSiteAliasValues !== 'function') return null;
   return wa.resolveSiteAliasValues(hint);
 }
+// LIVE INCIDENT (2026-11-24), direct instruction - "Sangam" lives in the
+// real HR sheet's Company Location column, not Working Location, so the
+// old location-only resolution found 0 rows for it. A location-type hint
+// now ALSO resolves against the (separate) Company Location alias system
+// - never instead of Working Location, since either field could hold the
+// real match depending on the site.
+async function resolveCompanyLocationFilter(hint) {
+  const wa = getWhatsappAssistant();
+  if (typeof wa.resolveCompanyLocationAliasValues !== 'function') return null;
+  return wa.resolveCompanyLocationAliasValues(hint);
+}
 async function resolveDepartmentFilter(hint) {
   const wa = getWhatsappAssistant();
   if (typeof wa.resolveDeptAliasValues !== 'function') return null;
@@ -239,8 +250,20 @@ function filterEmployeesForReport(employees, query) {
   return employees.filter((e) => {
     if (!wantsAllStatuses && String(e.status || '').toUpperCase() !== status.toUpperCase()) return false;
     if (query.designation && !matchesSubstring(e.designation, query.designation)) return false;
-    if (query.resolvedLocations && query.resolvedLocations.length) { if (!query.resolvedLocations.includes(e.location)) return false; }
-    else if (query.location && !matchesSubstring(e.location, query.location)) return false;
+    // LIVE INCIDENT (2026-11-24), direct instruction - a location-type
+    // hint must resolve against Working Location OR Company Location
+    // (never ONLY Working Location, which is the exact bug this fixes) -
+    // confirmed aliases from EITHER system pass; with neither resolving
+    // anything, the fallback substring match also checks both fields.
+    if ((query.resolvedLocations && query.resolvedLocations.length) || (query.resolvedCompanyLocations && query.resolvedCompanyLocations.length)) {
+      const matchesLocation = Boolean(query.resolvedLocations && query.resolvedLocations.length && query.resolvedLocations.includes(e.location));
+      const matchesCompanyLocation = Boolean(query.resolvedCompanyLocations && query.resolvedCompanyLocations.length && query.resolvedCompanyLocations.includes(e.companyLocation));
+      if (!matchesLocation && !matchesCompanyLocation) return false;
+    } else if (query.location) {
+      const matchesLocation = matchesSubstring(e.location, query.location);
+      const matchesCompanyLocation = matchesSubstring(e.companyLocation, query.location);
+      if (!matchesLocation && !matchesCompanyLocation) return false;
+    }
     if (query.resolvedDepartments && query.resolvedDepartments.length) { if (!query.resolvedDepartments.includes(e.department)) return false; }
     else if (query.department && !matchesSubstring(e.department, query.department)) return false;
     if (query.resolvedCompany) { if (!matchesSubstring(e.company, query.resolvedCompany)) return false; }
@@ -261,9 +284,10 @@ function filterEmployeesForReport(employees, query) {
 async function resolveReportFilters(filters) {
   filters = filters || {};
   const resolvedLocations = filters.location ? await resolveLocationFilter(filters.location) : null;
+  const resolvedCompanyLocations = filters.location ? await resolveCompanyLocationFilter(filters.location) : null;
   const resolvedDepartments = filters.department ? await resolveDepartmentFilter(filters.department) : null;
   const resolvedCompany = filters.company ? await resolveCompanyFilter(filters.company) : null;
-  return Object.assign({}, filters, { resolvedLocations, resolvedDepartments, resolvedCompany });
+  return Object.assign({}, filters, { resolvedLocations, resolvedCompanyLocations, resolvedDepartments, resolvedCompany });
 }
 
 // ---------------- Target resolution (one filter set -> one candidate set) ----------------
@@ -293,9 +317,10 @@ function siteDisplayLabel(resolvedValue, originalHint) {
   if (hint && tail.toLowerCase().includes(hint.toLowerCase())) return tail;
   return hint ? (tail + ' (' + hint + ')') : tail;
 }
-function deriveTargetLabel({ locationHint, resolvedLocations, companyHint, departmentHint }) {
+function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLocations, companyHint, departmentHint }) {
   if (locationHint) {
-    const resolved = resolvedLocations && resolvedLocations.length ? resolvedLocations[0] : null;
+    const resolved = (resolvedLocations && resolvedLocations.length) ? resolvedLocations[0]
+      : ((resolvedCompanyLocations && resolvedCompanyLocations.length) ? resolvedCompanyLocations[0] : null);
     return siteDisplayLabel(resolved, locationHint);
   }
   // Company/department labels keep the sender's own short hint/code
@@ -312,6 +337,7 @@ async function resolveOneTargetFromFilters(filters, employees) {
   const label = deriveTargetLabel({
     locationHint: filters.location,
     resolvedLocations: resolvedFilters.resolvedLocations,
+    resolvedCompanyLocations: resolvedFilters.resolvedCompanyLocations,
     companyHint: filters.company,
     departmentHint: filters.department
   });

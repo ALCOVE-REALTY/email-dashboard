@@ -3765,6 +3765,76 @@ router.post('/hr-assistant/new-depts/decline', async (req, res) => {
   }
 });
 
+// Company Location names (2026-11-24), direct instruction - HR reports
+// live bug fix: "Sangam" is the HR sheet's own Company Location value,
+// not a Working Location one - full parity with the site/department
+// routes above.
+router.get('/hr-assistant/companyloc-aliases', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.ensureDefaultCompanyLocAliasesSeeded();
+    const items = await whatsappAssistant.listCompanyLocAliases();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/companyloc-aliases', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { alias, companyLocationValue } = req.body || {};
+    if (!alias || !companyLocationValue) return res.status(400).json({ error: 'alias and companyLocationValue are required' });
+    const saved = await whatsappAssistant.saveCompanyLocAlias({ alias, companyLocationValue, confirmed: true });
+    if (!saved) return res.status(500).json({ error: 'Could not save the alias.' });
+    await whatsappAssistant.refreshCompanyLocAliasCacheNow();
+    res.json({ ok: true, item: saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.delete('/hr-assistant/companyloc-aliases/:id', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.deleteCompanyLocAlias(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.get('/hr-assistant/new-companylocs', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await whatsappAssistant.scanForNewCompanyLocs();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/new-companylocs/confirm', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { companyLocationValue, aliasWords } = req.body || {};
+    if (!companyLocationValue) return res.status(400).json({ error: 'companyLocationValue is required' });
+    const ok = await whatsappAssistant.confirmNewCompanyLoc(companyLocationValue, Array.isArray(aliasWords) ? aliasWords : []);
+    if (!ok) return res.status(500).json({ error: 'Could not confirm this Company Location.' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/new-companylocs/decline', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { companyLocationValue } = req.body || {};
+    if (!companyLocationValue) return res.status(400).json({ error: 'companyLocationValue is required' });
+    const ok = await whatsappAssistant.declineNewCompanyLoc(companyLocationValue);
+    if (!ok) return res.status(500).json({ error: 'Could not decline this Company Location.' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // TASK 1(e) (2026-11), direct instruction - "Company details" settings:
 // one card per distinct Company value already in the real HR data (the
 // company's own full legal name IS that HR column value - never stored

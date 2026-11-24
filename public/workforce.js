@@ -31,7 +31,7 @@ const menuBtn = document.getElementById('menuBtn');
 const VIEWS = [
   'overview', 'directory', 'joining', 'exit', 'attrition', 'tenure', 'movement', 'insights', 'quality',
   'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'companyDistribution', 'subhSettings', 'integrations', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel',
-  'siteAliases', 'deptAliases', 'companyDetails', 'letterSettings', 'aiUsage', 'dataBackups', 'settingsHistory', 'holidays', 'dataAccess', 'whatsappDocuments'
+  'siteAliases', 'deptAliases', 'companyLocAliases', 'companyDetails', 'letterSettings', 'aiUsage', 'dataBackups', 'settingsHistory', 'holidays', 'dataAccess', 'whatsappDocuments'
 ];
 const viewEls = Object.fromEntries(VIEWS.map((v) => [v, document.getElementById(v + 'View')]));
 
@@ -538,6 +538,13 @@ const subhSettingsDeptNamesBtn = document.getElementById('subhSettingsDeptNamesB
 if (subhSettingsDeptNamesBtn) {
   subhSettingsDeptNamesBtn.addEventListener('click', () => {
     if (window.__hrAssistantOpenDeptAliases) window.__hrAssistantOpenDeptAliases();
+  });
+}
+// Company location names (2026-11-24) - full parity with Site/Department names above.
+const subhSettingsCompanyLocNamesBtn = document.getElementById('subhSettingsCompanyLocNamesBtn');
+if (subhSettingsCompanyLocNamesBtn) {
+  subhSettingsCompanyLocNamesBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenCompanyLocAliases) window.__hrAssistantOpenCompanyLocAliases();
   });
 }
 // Company details (TASK 1e, 2026-11) - same entry pattern as Site/

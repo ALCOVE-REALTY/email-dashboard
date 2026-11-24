@@ -192,6 +192,19 @@
   const deptAliasInput = document.getElementById('hrDeptAliasInput');
   const deptAliasDeptValueInput = document.getElementById('hrDeptAliasDeptValueInput');
   const deptAliasSheetTitle = document.getElementById('hrDeptAliasSheetTitle');
+  // Company location names (2026-11-24) - full parity with site/dept aliases above
+  const companyLocAliasesBadge = document.getElementById('hrCompanyLocAliasesBadge');
+  const companyLocAliasesList = document.getElementById('hrCompanyLocAliasesList');
+  const newCompanyLocsList = document.getElementById('hrNewCompanyLocsList');
+  const companyLocAliasAddBtn = document.getElementById('hrCompanyLocAliasAddBtn');
+  const companyLocAliasSheetBackdrop = document.getElementById('hrCompanyLocAliasSheetBackdrop');
+  const companyLocAliasSheet = document.getElementById('hrCompanyLocAliasSheet');
+  const companyLocAliasSheetCloseBtn = document.getElementById('hrCompanyLocAliasSheetCloseBtn');
+  const companyLocAliasSheetCancelBtn = document.getElementById('hrCompanyLocAliasSheetCancelBtn');
+  const companyLocAliasSheetSaveBtn = document.getElementById('hrCompanyLocAliasSheetSaveBtn');
+  const companyLocAliasInput = document.getElementById('hrCompanyLocAliasInput');
+  const companyLocAliasValueInput = document.getElementById('hrCompanyLocAliasValueInput');
+  const companyLocAliasSheetTitle = document.getElementById('hrCompanyLocAliasSheetTitle');
   // Company details (TASK 1e, 2026-11) - flat list, no alias-groups: one
   // card per real HR Company value, edit-only.
   // TASK 4 (2026-11) - companyDetailsPage removed, same reasoning as
@@ -4081,6 +4094,15 @@
       })(),
       (async () => {
         try {
+          const [companyLocAliasResp, newCompanyLocsResp] = await Promise.all([
+            fetch('/api/workforce/hr-assistant/companyloc-aliases').then((res) => res.json()),
+            fetch('/api/workforce/hr-assistant/new-companylocs').then((res) => res.json())
+          ]);
+          pageDataCache.companyLocAliases = { aliases: companyLocAliasResp.items || [], newCompanyLocs: newCompanyLocsResp.items || [] };
+        } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+      })(),
+      (async () => {
+        try {
           const companyResp = await fetch('/api/workforce/hr-assistant/company-details').then((res) => res.json());
           pageDataCache.companyDetails = { items: companyResp.items || [], logo: companyResp.logo || null };
         } catch (err) { /* best effort - a real page open will just fetch fresh */ }
@@ -4205,6 +4227,178 @@
         // LIVE BUG FIX (2026-11) - same stale-panelView-guard fix as
         // Site names' own save handler above.
         loadDeptAliasesPage();
+      }, { resetAfterSuccess: true });
+    });
+  }
+
+  // Company location names (2026-11-24) - full parity with site/dept
+  // aliases above. Every function below is the exact same shape as its
+  // department-alias counterpart just above, just Company-Location-scoped.
+  function companyLocAliasGroupHtml(group) {
+    const aliasRows = group.aliases.map((a) =>
+      '<div class="wf-site-alias-chip" data-id="' + escapeHtml(a.id) + '">' +
+        '<span>' + escapeHtml(a.alias) + '</span>' +
+        '<button type="button" class="wf-site-alias-chip-delete" data-action="delete" aria-label="Delete this alias">' +
+          '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+        '</button>' +
+      '</div>'
+    ).join('');
+    return '<div class="wf-auto-task-card" data-companyloc-value="' + escapeHtml(group.companyLocationValue) + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+        '<div class="wf-auto-task-subject">' + escapeHtml(group.companyLocationValue) + '</div>' +
+      '</div></div>' +
+      '<div class="wf-site-alias-chips">' + (aliasRows || '<span class="wf-auto-hint">No aliases yet.</span>') + '</div>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="edit-group">Edit</button></div></div>';
+  }
+  function newCompanyLocCardHtml(item) {
+    const suggested = (item.suggestedAliases || []).join(', ');
+    return '<div class="wf-auto-task-card" data-companyloc="' + escapeHtml(item.companyLocationValue) + '">' +
+      '<div class="wf-auto-task-subject">New Company Location found: ' + escapeHtml(item.companyLocationValue) + '</div>' +
+      '<label class="wf-rem-field"><span>Aliases (edit if needed, comma-separated - leave blank if none needed)</span>' +
+      '<input type="text" data-role="new-companyloc-aliases" value="' + escapeHtml(suggested) + '" /></label>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="decline">Decline</button><button type="button" class="plain" data-action="confirm">Confirm</button></div></div>';
+  }
+  function renderCompanyLocAliasesPage(aliases, newCompanyLocs) {
+      if (newCompanyLocsList) {
+        newCompanyLocsList.innerHTML = newCompanyLocs.length ? newCompanyLocs.map(newCompanyLocCardHtml).join('') : '';
+        newCompanyLocsList.querySelectorAll('[data-action="confirm"]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const card = btn.closest('[data-companyloc]');
+            const companyLocationValue = card.dataset.companyloc;
+            const input = card.querySelector('[data-role="new-companyloc-aliases"]');
+            const aliasWords = (input.value || '').split(',').map((s) => s.trim()).filter(Boolean);
+            await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/new-companylocs/confirm', { companyLocationValue, aliasWords }), () => {
+              closeRowWithToast(card, { title: 'Company Location confirmed', type: 'success' });
+              pageDataCache.companyLocAliases = null;
+              loadCompanyLocAliasesBadge();
+            });
+          });
+        });
+        newCompanyLocsList.querySelectorAll('[data-action="decline"]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const card = btn.closest('[data-companyloc]');
+            const companyLocationValue = card.dataset.companyloc;
+            await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/new-companylocs/decline', { companyLocationValue }), () => {
+              closeRowWithToast(card, { title: 'Company Location declined - won\'t be suggested again', type: 'success' });
+              pageDataCache.companyLocAliases = null;
+              loadCompanyLocAliasesBadge();
+            });
+          });
+        });
+      }
+      if (!aliases.length) { companyLocAliasesList.innerHTML = '<div class="wf-rem-empty">No Company Location names saved yet.</div>'; }
+      else {
+        const groups = [];
+        const groupByValue = new Map();
+        aliases.forEach((a) => {
+          let group = groupByValue.get(a.companyLocationValue);
+          if (!group) { group = { companyLocationValue: a.companyLocationValue, aliases: [] }; groupByValue.set(a.companyLocationValue, group); groups.push(group); }
+          group.aliases.push(a);
+        });
+        companyLocAliasesList.innerHTML = groups.map(companyLocAliasGroupHtml).join('');
+        companyLocAliasesList.querySelectorAll('[data-action="delete"]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const chip = btn.closest('[data-id]');
+            const id = chip.dataset.id;
+            if (!(await showConfirmDialog('Delete this alias?', { confirmLabel: 'Delete' }))) return;
+            await runButtonAction(btn, () => fetch('/api/workforce/hr-assistant/companyloc-aliases/' + encodeURIComponent(id), { method: 'DELETE' }).then((res) => res.json()), () => {
+              chip.remove();
+              showActionToast('Alias deleted');
+              pageDataCache.companyLocAliases = null;
+              if (!companyLocAliasesList.querySelector('[data-companyloc-value="' + CSS.escape(chip.closest('[data-companyloc-value]').dataset.companylocValue) + '"] [data-id]')) loadCompanyLocAliasesPage();
+            });
+          });
+        });
+        companyLocAliasesList.querySelectorAll('[data-action="edit-group"]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const card = btn.closest('[data-companyloc-value]');
+            const group = groups.find((g) => g.companyLocationValue === card.dataset.companylocValue);
+            openCompanyLocAliasSheet({ mode: 'edit', companyLocationValue: group.companyLocationValue, aliases: group.aliases });
+          });
+        });
+      }
+  }
+  async function loadCompanyLocAliasesPage() {
+    if (!companyLocAliasesList) return;
+    const cached = pageDataCache.companyLocAliases;
+    if (cached) renderCompanyLocAliasesPage(cached.aliases, cached.newCompanyLocs);
+    else {
+      companyLocAliasesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+      if (newCompanyLocsList) newCompanyLocsList.innerHTML = '';
+    }
+    try {
+      const [aliasResp, newCompanyLocsResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/companyloc-aliases').then((res) => res.json()),
+        fetch('/api/workforce/hr-assistant/new-companylocs').then((res) => res.json())
+      ]);
+      const aliases = aliasResp.items || [];
+      const newCompanyLocs = newCompanyLocsResp.items || [];
+      pageDataCache.companyLocAliases = { aliases, newCompanyLocs };
+      renderCompanyLocAliasesPage(aliases, newCompanyLocs);
+    } catch (err) {
+      if (!cached) companyLocAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load Company Location names.</div>';
+    }
+  }
+  async function loadCompanyLocAliasesBadge() {
+    if (!companyLocAliasesBadge) return;
+    if (pageDataCache.companyLocAliases) {
+      setCountBadge(companyLocAliasesBadge, pageDataCache.companyLocAliases.newCompanyLocs.length);
+      return;
+    }
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/new-companylocs').then((res) => res.json());
+      setCountBadge(companyLocAliasesBadge, (r.items || []).length);
+    } catch (err) { /* best effort */ }
+  }
+  window.__hrAssistantOpenCompanyLocAliases = function () {
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('companyLocAliases', { resetHistory: true });
+    loadCompanyLocAliasesPage();
+  };
+  window.__hrAssistantRefreshCompanyLocAliasesBadge = loadCompanyLocAliasesBadge;
+  function closeCompanyLocAliasSheet() {
+    companyLocAliasSheetBackdrop.classList.remove('open');
+    companyLocAliasSheet.classList.remove('open');
+    setTimeout(() => { companyLocAliasSheetBackdrop.hidden = true; companyLocAliasSheet.hidden = true; }, 320);
+  }
+  let companyLocAliasSheetState = { mode: 'add', companyLocationValue: '', existingAliases: [] };
+  function openCompanyLocAliasSheet({ mode, companyLocationValue, aliases }) {
+    companyLocAliasSheetState = { mode, companyLocationValue: companyLocationValue || '', existingAliases: aliases || [] };
+    if (companyLocAliasSheetTitle) companyLocAliasSheetTitle.textContent = mode === 'edit' ? 'Edit "' + companyLocationValue + '"' : 'Add a new group';
+    if (companyLocAliasValueInput) { companyLocAliasValueInput.value = companyLocationValue || ''; companyLocAliasValueInput.disabled = mode === 'edit'; }
+    if (companyLocAliasInput) companyLocAliasInput.value = mode === 'edit' ? (aliases || []).map((a) => a.alias).join(', ') : '';
+    companyLocAliasSheetBackdrop.hidden = false;
+    companyLocAliasSheet.hidden = false;
+    void companyLocAliasSheet.offsetHeight;
+    companyLocAliasSheetBackdrop.classList.add('open');
+    companyLocAliasSheet.classList.add('open');
+  }
+  if (companyLocAliasAddBtn) companyLocAliasAddBtn.addEventListener('click', () => openCompanyLocAliasSheet({ mode: 'add' }));
+  if (companyLocAliasSheetCloseBtn) companyLocAliasSheetCloseBtn.addEventListener('click', closeCompanyLocAliasSheet);
+  if (companyLocAliasSheetCancelBtn) companyLocAliasSheetCancelBtn.addEventListener('click', closeCompanyLocAliasSheet);
+  if (companyLocAliasSheetBackdrop) companyLocAliasSheetBackdrop.addEventListener('click', closeCompanyLocAliasSheet);
+  if (companyLocAliasSheetSaveBtn) {
+    companyLocAliasSheetSaveBtn.addEventListener('click', async () => {
+      const companyLocationValue = (companyLocAliasSheetState.mode === 'edit' ? companyLocAliasSheetState.companyLocationValue : (companyLocAliasValueInput.value || '')).trim();
+      const newAliasWords = (companyLocAliasInput.value || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (!companyLocationValue || !newAliasWords.length) { showActionToast('Both fields are required.', null, 'warning'); return; }
+      await runButtonAction(companyLocAliasSheetSaveBtn, async () => {
+        if (companyLocAliasSheetState.mode === 'edit') {
+          const existingByLower = new Map(companyLocAliasSheetState.existingAliases.map((a) => [a.alias.toLowerCase(), a]));
+          const newByLower = new Map(newAliasWords.map((w) => [w.toLowerCase(), w]));
+          const toDelete = companyLocAliasSheetState.existingAliases.filter((a) => !newByLower.has(a.alias.toLowerCase()));
+          const toAdd = newAliasWords.filter((w) => !existingByLower.has(w.toLowerCase()));
+          for (const a of toDelete) await fetch('/api/workforce/hr-assistant/companyloc-aliases/' + encodeURIComponent(a.id), { method: 'DELETE' });
+          for (const w of toAdd) await postJsonOrThrow('/api/workforce/hr-assistant/companyloc-aliases', { alias: w, companyLocationValue });
+        } else {
+          for (const w of newAliasWords) await postJsonOrThrow('/api/workforce/hr-assistant/companyloc-aliases', { alias: w, companyLocationValue });
+        }
+        return { ok: true };
+      }, () => {
+        closeCompanyLocAliasSheet();
+        showProToast({ title: companyLocAliasSheetState.mode === 'edit' ? 'Group updated' : 'Group added', type: 'success' });
+        pageDataCache.companyLocAliases = null;
+        loadCompanyLocAliasesPage();
       }, { resetAfterSuccess: true });
     });
   }
@@ -6538,6 +6732,7 @@
     refreshAttnBadge(); // fire-and-forget, independent of the mails/WhatsApp render below
     loadSiteAliasesBadge(); // fire-and-forget, same reasoning
     loadDeptAliasesBadge(); // fire-and-forget, same reasoning
+    loadCompanyLocAliasesBadge(); // fire-and-forget, same reasoning
     // SPEED FIX (2026-11, direct instruction) - same "fire-and-forget the
     // instant Important Communications opens" convention as the 3 lines
     // above, warming the 3 sub-pages one tap further in (WhatsApp/

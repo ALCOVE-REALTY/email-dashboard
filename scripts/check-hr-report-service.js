@@ -129,6 +129,22 @@ async function main() {
     const rows = hrReportService.filterEmployeesForReport(FAKE_EMPLOYEES, { location: 'ballygunge' });
     return rows.length === 1 && rows[0].employeeId === 'E001';
   })());
+  const COMPANY_LOC_FAKE_EMPLOYEES = [
+    { employeeId: 'CL001', name: 'Site Worker', designation: 'Engineer', department: 'Civil', location: 'HO', companyLocation: 'Sangam B', company: 'Alcove Developers LLP', status: 'ACTIVE', doj: new Date('2024-01-01') },
+    { employeeId: 'CL002', name: 'Other Worker', designation: 'Engineer', department: 'Civil', location: 'Plot A Site', companyLocation: 'Plot A', company: 'Alcove Developers LLP', status: 'ACTIVE', doj: new Date('2024-01-01') }
+  ];
+  check('LIVE INCIDENT (2026-11-24), direct instruction - a value stored in the Company Location column (not Working Location) now resolves via resolvedCompanyLocations - the exact "Sangam gave 0 rows" bug, reproduced and confirmed fixed', (() => {
+    const rows = hrReportService.filterEmployeesForReport(COMPANY_LOC_FAKE_EMPLOYEES, { resolvedCompanyLocations: ['Sangam B'] });
+    return rows.length === 1 && rows[0].employeeId === 'CL001';
+  })());
+  check('a plain `location` hint falls back to a substring match against Company Location too (not just Working Location) when no confirmed alias resolved anything', (() => {
+    const rows = hrReportService.filterEmployeesForReport(COMPANY_LOC_FAKE_EMPLOYEES, { location: 'plot a' });
+    return rows.length === 1 && rows[0].employeeId === 'CL002';
+  })());
+  check('resolvedLocations (Working Location) and resolvedCompanyLocations (Company Location) are checked WITH EACH OTHER (OR) - a match on EITHER field passes', (() => {
+    const rows = hrReportService.filterEmployeesForReport(COMPANY_LOC_FAKE_EMPLOYEES, { resolvedLocations: ['Plot A Site'], resolvedCompanyLocations: ['Sangam B'] });
+    return rows.length === 2;
+  })());
   check('resolvedCompany (company code resolved to the real company name) filters correctly', (() => {
     const rows = hrReportService.filterEmployeesForReport(FAKE_EMPLOYEES, { resolvedCompany: 'Alcove Realty' });
     return rows.length === 1 && rows[0].employeeId === 'E004';
@@ -319,6 +335,28 @@ async function main() {
     return Boolean(targets) && targets.length === 2
       && targets.find((t) => t.label === 'Ballygunge').candidates.length === 1
       && targets.find((t) => t.label === 'Srirampur').candidates.length === 1;
+  });
+  await checkAsync('LIVE INCIDENT (2026-11-24), direct instruction, end to end - "Sangam & Triveni staff list dao" resolves via the real Company Location alias system (not Working Location), exactly the reported bug', async () => {
+    const employeesWithCompanyLoc = [
+      { employeeId: 'CLE001', name: 'A', designation: 'Engineer', department: 'Civil', location: 'HO', companyLocation: 'New Kolkata - Sangam B', company: 'Alcove Developers LLP', status: 'ACTIVE', doj: new Date('2024-01-01') },
+      { employeeId: 'CLE002', name: 'B', designation: 'Engineer', department: 'Civil', location: 'HO', companyLocation: 'Plot A', company: 'Alcove Developers LLP', status: 'ACTIVE', doj: new Date('2024-01-01') }
+    ];
+    await whatsappAssistant.saveCompanyLocAlias({ alias: 'Sangam', companyLocationValue: 'New Kolkata - Sangam B', confirmed: true });
+    await whatsappAssistant.saveCompanyLocAlias({ alias: 'Triveni', companyLocationValue: 'Plot A', confirmed: true });
+    await whatsappAssistant.refreshCompanyLocAliasCacheNow();
+    try {
+      const result = await hrReportService.handleHrReportRequest({
+        phone: '919000000012', name: 'Someone', lang: 'banglish', text: 'Sangam & Triveni staff list dao', history: [],
+        senderEmployee: null, employees: employeesWithCompanyLoc,
+        deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', locations: ['Sangam', 'Triveni'], columns: ['Emp Code', 'Name'], language: 'banglish' }) }
+      });
+      const targets = result && result.pendingDocuments && result.pendingDocuments.targets;
+      return Boolean(targets) && targets.length === 2 && targets.every((t) => t.candidates.length === 1);
+    } finally {
+      const all = await whatsappAssistant.listCompanyLocAliases();
+      for (const a of all) { if (['Sangam', 'Triveni'].includes(a.alias)) await whatsappAssistant.deleteCompanyLocAlias(a.id); }
+      await whatsappAssistant.refreshCompanyLocAliasCacheNow();
+    }
   });
   await checkAsync('a filter that matches NO employees gets an honest "no rows" reply, never a false "Report ready" and never any pendingDocuments', async () => {
     const result = await hrReportService.handleHrReportRequest({
