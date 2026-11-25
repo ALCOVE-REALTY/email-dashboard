@@ -311,6 +311,10 @@
   const healthWaV1DupesEl = document.getElementById('hrHealthWaV1Dupes');
   const healthWaV1WebhookEl = document.getElementById('hrHealthWaV1Webhook');
   const healthWaV1DiagEl = document.getElementById('hrHealthWaV1Diag');
+  // Runbook (Part A point 6, 2026-11-25, direct instruction).
+  const openRunbookBtn = document.getElementById('hrOpenRunbookBtn');
+  const runbookItTemplateEl = document.getElementById('hrRunbookItTemplate');
+  const runbookCopyBtn = document.getElementById('hrRunbookCopyBtn');
   const backupRestoreBackdrop = document.getElementById('hrBackupRestoreBackdrop');
   const backupRestoreSheet = document.getElementById('hrBackupRestoreSheet');
   const backupRestoreCloseBtn = document.getElementById('hrBackupRestoreCloseBtn');
@@ -4619,6 +4623,26 @@
   // showHolidays()/the old openPanel()+navStack branching are gone, same
   // dead-code reasoning as __hrAssistantOpenSiteAliases's own rewrite.
   // closePanel(true): same LIVE BUG FIX as every other open-function above.
+  // Runbook (Part A point 6, 2026-11-25, direct instruction) - "a short
+  // 'If SUBH stops replying' runbook page linked from the System health
+  // card... a ready-to-send message template for IT." Pure static
+  // content - no API call, so unlike Holidays above there's no load
+  // function, just the view switch. Reached by drilling INTO Data &
+  // backups (the health card lives there), so no resetHistory - the
+  // generic [data-back] button already returns there correctly (see
+  // setView's own comment on the drill-in vs. fresh-entry distinction).
+  const RUNBOOK_IT_TEMPLATE = 'Hi, SUBH (our WhatsApp HR assistant) has not been replying since [TIME YOU NOTICED].\n\n' +
+    'The System health card on our dashboard currently shows:\n[paste the warning line(s) from the System health card here]\n\n' +
+    'Could you please check the WhatsApp gateway/server status on your end? Screenshots attached.\n\nThanks!';
+  if (runbookItTemplateEl) runbookItTemplateEl.textContent = RUNBOOK_IT_TEMPLATE;
+  if (openRunbookBtn) openRunbookBtn.addEventListener('click', () => {
+    if (window.setView) window.setView('subhRunbook');
+  });
+  if (runbookCopyBtn) runbookCopyBtn.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(RUNBOOK_IT_TEMPLATE); } catch (err) { /* clipboard API unavailable - the template is still shown plainly above */ }
+    runbookCopyBtn.textContent = 'Copied ✓';
+    setTimeout(() => { runbookCopyBtn.textContent = 'Copy'; }, 1800);
+  });
   window.__hrAssistantOpenHolidays = function () {
     if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
     if (window.setView) window.setView('holidays', { resetHistory: true });

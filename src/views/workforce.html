@@ -3476,6 +3476,10 @@
              in-memory sample - see GET /hr-assistant/system-health. -->
         <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 4px 6px">
           <span class="wf-ai-sheet-title" style="font-size:14px">System health</span>
+          <!-- Runbook link (Part A point 6, 2026-11-25, direct instruction) -
+               "a short 'If SUBH stops replying' runbook page linked from the
+               System health card." -->
+          <button type="button" class="wf-link-btn" id="hrOpenRunbookBtn" style="font-size:12px">If SUBH stops replying →</button>
         </div>
         <div class="wf-dlog-stats" id="hrSystemHealthCard" style="flex-wrap:wrap">
           <div class="wf-dlog-stat-card">
@@ -3576,6 +3580,39 @@
           <span class="wf-ai-sheet-title" id="hrBackupRestoreTitle">Restore from backup</span>
         </div>
         <div class="wf-rem-sheet-body" id="hrBackupRestoreBody"></div>
+      </div>
+    </section>
+
+    <section id="subhRunbookView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back aria-label="Back">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>If SUBH stops replying</h2>
+      </div>
+      <!-- Runbook (Part A point 6, 2026-11-25, direct instruction) - "a
+           short 'If SUBH stops replying' runbook page... what to check,
+           which screenshots to take, and a ready-to-send message template
+           for IT." Pure static content, linked from the System health
+           card above - no API call, nothing to load. -->
+      <div class="wf-comms-page" id="hrRunbookPage">
+        <div style="padding:4px 4px 12px">
+          <div class="wf-ai-sheet-title" style="font-size:14px;padding:8px 0 4px">1. Check the System health card first</div>
+          <div class="wf-auto-hint">Go back to Data &amp; backups and look at the System health card right above this link. If anything there reads STUCK, disconnected, unreachable, or shows a red warning line, that already tells you what's wrong and since when - skip straight to step 3.</div>
+        </div>
+        <div style="padding:4px 4px 12px">
+          <div class="wf-ai-sheet-title" style="font-size:14px;padding:8px 0 4px">2. If the health card looks fine but SUBH still isn't replying</div>
+          <div class="wf-auto-hint">Open the WhatsApp chat where a message went unanswered and note the exact time it was sent. Check whether you (or anyone else) already replied to it manually from the phone - SUBH deliberately never replies after a manual reply.</div>
+        </div>
+        <div style="padding:4px 4px 12px">
+          <div class="wf-ai-sheet-title" style="font-size:14px;padding:8px 0 4px">3. Screenshots to take</div>
+          <div class="wf-auto-hint">- The System health card itself (whatever it's showing right now)<br>- Any red Action-needed card on your dashboard, if one is showing<br>- The WhatsApp chat with the unanswered message, showing the time it arrived</div>
+        </div>
+        <div style="padding:4px 4px 12px">
+          <div class="wf-ai-sheet-title" style="font-size:14px;padding:8px 0 4px">4. Ready-to-send message for IT</div>
+          <div class="wf-auto-hint" id="hrRunbookItTemplate" style="white-space:pre-line;background:var(--wi-surface-2);border-radius:8px;padding:10px;margin-top:4px"></div>
+          <button type="button" class="wf-link-btn" id="hrRunbookCopyBtn" style="margin-top:8px">Copy</button>
+        </div>
       </div>
     </section>
 
@@ -4071,12 +4108,12 @@
   </div>
 
   <script src="vendor/chart.js/chart.umd.js"></script>
-  <script src="workforce.js?v=254"></script>
+  <script src="workforce.js?v=255"></script>
   <!-- PHASE 5.1 (2026-11) - WhatsApp mediator guard shared helper, loaded
        BEFORE hrAssistant.js so window.wfMediatorGuard is ready by the time
        hrAssistant.js's own setup code runs. See public/wfMediatorGuard.js. -->
   <script src="wfMediatorGuard.js?v=1"></script>
-  <script src="hrAssistant.js?v=7"></script>
+  <script src="hrAssistant.js?v=8"></script>
   <script src="workforce-ui-enhance.js?v=1"></script>
   <script src="js/wi-motion.js?v=3"></script>
 </body>

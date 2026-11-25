@@ -31,7 +31,7 @@ const menuBtn = document.getElementById('menuBtn');
 const VIEWS = [
   'overview', 'directory', 'joining', 'exit', 'attrition', 'tenure', 'movement', 'insights', 'quality',
   'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'companyDistribution', 'subhSettings', 'integrations', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel',
-  'siteAliases', 'deptAliases', 'companyLocAliases', 'companyDetails', 'letterSettings', 'aiUsage', 'dataBackups', 'settingsHistory', 'holidays', 'dataAccess', 'whatsappDocuments'
+  'siteAliases', 'deptAliases', 'companyLocAliases', 'companyDetails', 'letterSettings', 'aiUsage', 'dataBackups', 'settingsHistory', 'holidays', 'dataAccess', 'whatsappDocuments', 'subhRunbook'
 ];
 const viewEls = Object.fromEntries(VIEWS.map((v) => [v, document.getElementById(v + 'View')]));
 

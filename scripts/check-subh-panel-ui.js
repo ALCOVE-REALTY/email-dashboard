@@ -1692,6 +1692,31 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   await page.click('#hrBackupRestoreCloseBtn');
   await page.waitForTimeout(350);
 
+  // Runbook (Part A point 6, 2026-11-25, direct instruction) - "a short
+  // 'If SUBH stops replying' runbook page linked from the System health
+  // card." Still on the Data & backups page from the block just above
+  // (where the health card, and this link, live) - a real click on the
+  // real link, not window.__hrAssistant...() directly, since this one
+  // has no dedicated open-function (pure static content, nothing to load).
+  const runbookErrBefore = consoleErrors.length + pageErrors.length;
+  await page.click('#hrOpenRunbookBtn');
+  await page.waitForTimeout(250);
+  check('Runbook page opens (not a blank page)', await page.locator('#hrRunbookPage').isVisible());
+  check('Runbook: title reads "If SUBH stops replying"', (await page.locator('#subhRunbookView h2').textContent().catch(() => '')).trim() === 'If SUBH stops replying');
+  const runbookTemplateText = await page.locator('#hrRunbookItTemplate').textContent().catch(() => '');
+  check('Runbook: the ready-to-send IT message template renders', /has not been replying since/.test(runbookTemplateText || '') && /Screenshots attached/.test(runbookTemplateText || ''), 'got: ' + JSON.stringify(runbookTemplateText));
+  await page.click('#hrRunbookCopyBtn');
+  check('Runbook: "Copy" button flips to "Copied ✓"', (await page.locator('#hrRunbookCopyBtn').textContent().catch(() => '')).includes('Copied'));
+  const runbookErrAfter = consoleErrors.length + pageErrors.length;
+  check('Runbook: no JS error was thrown opening the page or copying the template', runbookErrAfter === runbookErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(runbookErrBefore).concat(pageErrors.slice(runbookErrBefore))));
+  // Drill-in navigation (reached FROM Data & backups, never resetHistory)
+  // - the generic [data-back] button must return there, not to the
+  // Dashboard.
+  await page.click('#subhRunbookView [data-back]');
+  await page.waitForTimeout(250);
+  check('Runbook: the back button returns to Data & backups (drill-in navigation, never resets to the Dashboard)', await page.locator('#hrDataBackupsPage').isVisible());
+
   // TASK 3 / ISSUE 3 (2026-11), direct instruction - "Settings history":
   // every write/delete to owner settings, Restore per change. ISSUE
   // 3(b): the filter chips are GONE - one single list, newest first.
