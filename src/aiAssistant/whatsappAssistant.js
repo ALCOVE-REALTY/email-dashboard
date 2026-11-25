@@ -17830,6 +17830,7 @@ module.exports = {
   setAllowlistName,
   getAllowlistName,
   resolveSenderName,
+  formatIstDateTime,
   activeEmployeeNameFor,
   activeNameOrNumber,
   displayNameOrHidden,

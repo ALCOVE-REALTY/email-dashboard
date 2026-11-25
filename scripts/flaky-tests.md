@@ -273,3 +273,47 @@ Failed checks:
  - a second maintenance tick firing while the first is still running is skipped outright (never overlaps) -- calls while first still in flight: 0
 ======================================================================
 ```
+
+## check-system-health-monitor.js
+Flaked on 2026-11-25T09:56:32.172Z - failed once, passed on a lone solo retry.
+```
+[ok] once dismissed/cleared, listActionNeededItems no longer shows it
+======================================================================
+checkKvLatency / checkEventLoopLag / checkAiFallbackStreak - LIVE INCIDENT (2026-11), direct instruction - "slow KV (p95 above a threshold), event-loop lag, AI call failures (alert after 3 in a row)"
+======================================================================
+[ok] checkKvLatency with no samples yet reports ok:true (never a false alarm before the first real check has run)
+[ok] checkKvLatency reports ok:false once the p95 of recent checkKv latencies crosses the threshold
+[ok] checkKvLatency stays ok:true for normal, fast latencies
+[ok] checkEventLoopLag with no metrics sample yet reports ok:true
+[ok] getAutoReplyFallbackStreak starts at 0 with nothing recorded
+[ok] checkAiFallbackStreak reports ok:false once 3+ fallbacks have fired recently - the real "AI call failures" signal
+[ok] checkAiFallbackStreak stays ok:true under the 3-in-a-row threshold
+[ok] runHealthCheck includes the 3 new checks in its own result shape without breaking the existing failure/recovery behavior
+======================================================================
+AI fallback alert (2026-11, direct instruction) - "raise a red Action-needed card + owner alert every time [the fallback] is used"
+======================================================================
+[ok] setAiFallbackAlert writes a durable record with a running count, getAiFallbackAlert reads it back
+[ok] once set, listActionNeededItems surfaces it as its own kind (ai_fallback_alert)
+[ok] once dismissed/cleared, listActionNeededItems no longer shows the AI fallback card
+======================================================================
+checkGatewayV1Session - new WhatsApp gateway session health (Commit 3, direct instruction)
+======================================================================
+[ok] with WHATSAPP_GATEWAY not "new", reports ok:true without ever calling the gateway (true no-op)
+[ok] with the gateway enabled and a healthy status/health response, reports ok:true
+[ok] direct instruction - "require several consecutive failures": a "relink_required" status reports ok:true (within its own confirm window) for the first 2 checks, and only ok:false naming the bad status on the 3rd CONSECUTIVE one
+[ok] direct instruction - a single transient bad reading (e.g. right after a real reconnect) that then recovers NEVER reaches the confirm threshold at all - the counter resets on any healthy reading
+[ok] LIVE INCIDENT (2026-11-24), ROOT CAUSE, direct instruction - status "active" with a momentary connected:false blip reports ok:true, no alert - this was the exact live bug (a healthy session alerted on essentially every single 2-minute tick)
+[ok] with the gateway enabled and status "disabled" persisting 3 consecutive checks, reports ok:false naming the bad status
+[ok] direct instruction - "linking = connecting (warn only after a few minutes)": a FRESH "linking" sighting reports ok:true (within its own grace period), never an immediate alarm
+[ok] direct instruction - a "linking" status that has PERSISTED past the grace window (simulated via a pre-seeded old timestamp) reports ok:false, naming how long it has been linking
+[ok] once status moves back to "active", the linking-since timer is cleared - a LATER linking spell starts its own fresh grace period, never inheriting an old timestamp
+[ok] with 1+ decryption failures in the last hour, reports ok:false even though status itself looks fine - the exact alert requested
+[ok] direct instruction - "a single 503/timeout must not flip to disconnected or send an alert": a thrown status/health error reports ok:true for the first 2 checks (within its own confirm window), never throws out of runHealthCheck, and only ok:false on the 3rd CONSECUTIVE one
+[ok] runHealthCheck itself includes gatewayV1Session in its result and never crashes when the gateway is disabled
+[ok] direct instruction - the debounce state is durable in KV: a simulated restart (freshMonitor - a genuinely fresh module, its own in-memory fallback starting back at its initial unset values, exactly like a real process restart) still correctly suppresses a redundant alert for an ONGOING real failure, reading the prior state back from KV alone
+======================================================================
+76/77 passed
+Failed checks:
+ - direct instruction - "for more than 5 minutes, send once": a brand new incident that has NOT yet persisted past the gate does not alert anyone yet, even though the Action-needed card is already set (shows immediately on the health page regardless)
+======================================================================
+```

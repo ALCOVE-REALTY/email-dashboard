@@ -600,26 +600,53 @@ async function resolveOwnerContact() {
   return { phone, email };
 }
 
-// Two independent channels, neither depending on KV, each wrapped so one
-// failing (e.g. the gateway being the actual failure) never stops the
-// other from being attempted.
-async function sendAlert(failureLines) {
-  const text = '🚨 SUBH health check failed:\n' + failureLines.map((l) => '- ' + l).join('\n');
-  const { phone, email } = await resolveOwnerContact();
-  const result = { whatsapp: null, email: null };
-  if (phone) {
-    try { result.whatsapp = await whatsappSend.sendWhatsAppMessage(phone, text); }
-    catch (err) { result.whatsapp = { ok: false, error: err.message }; }
-  } else {
-    result.whatsapp = { ok: false, error: 'no owner WhatsApp number configured' };
+// HARDENING (2026-11-25, direct instruction) - "Alert IT and me on BOTH
+// email and WhatsApp... IT_ALERT_EMAIL... IT_ALERT_WHATSAPP; my number as
+// today." The owner's own existing contact resolution is untouched; IT is
+// a SECOND, independent recipient on each channel, never a replacement.
+async function resolveAlertRecipients() {
+  const owner = await resolveOwnerContact();
+  return {
+    whatsappNumbers: [owner.phone, process.env.IT_ALERT_WHATSAPP || null].filter(Boolean),
+    emails: [owner.email, process.env.IT_ALERT_EMAIL || null].filter(Boolean)
+  };
+}
+
+// Shared by sendAlert/sendRecoveredAlert - every recipient on every
+// channel is independent (one failing, e.g. the gateway being the actual
+// failure, never stops any other send from being attempted) - "if the
+// gateway itself is down and a WhatsApp alert can't be sent, the email
+// still goes immediately" falls directly out of this: the email loop
+// below never awaits/depends on the WhatsApp loop's own outcome.
+async function sendToAlertRecipients(text, subject) {
+  const { whatsappNumbers, emails } = await resolveAlertRecipients();
+  const result = { whatsapp: [], email: [] };
+  if (!whatsappNumbers.length) result.whatsapp.push({ ok: false, error: 'no WhatsApp recipient configured (SUBH_OWNER_WHATSAPP_NUMBER/IT_ALERT_WHATSAPP)' });
+  for (const phone of whatsappNumbers) {
+    try { result.whatsapp.push(await whatsappSend.sendWhatsAppMessage(phone, text)); }
+    catch (err) { result.whatsapp.push({ ok: false, error: err.message }); }
   }
-  if (email) {
-    try { await gmailService.sendMail({ to: email, subject: '🚨 SUBH health check alert', text }); result.email = { ok: true }; }
-    catch (err) { result.email = { ok: false, error: err.message }; }
-  } else {
-    result.email = { ok: false, error: 'no HR_ADMIN_EMAIL/SUBH_MEMORY_OWNER_EMAIL configured' };
+  if (!emails.length) result.email.push({ ok: false, error: 'no email recipient configured (HR_ADMIN_EMAIL/SUBH_MEMORY_OWNER_EMAIL/IT_ALERT_EMAIL)' });
+  for (const email of emails) {
+    try { await gmailService.sendMail({ to: email, subject, text }); result.email.push({ ok: true }); }
+    catch (err) { result.email.push({ ok: false, error: err.message }); }
   }
   return result;
+}
+async function sendAlert(failureLines) {
+  const text = '🚨 SUBH health check failed:\n' + failureLines.map((l) => '- ' + l).join('\n');
+  return sendToAlertRecipients(text, '🚨 SUBH health check alert');
+}
+// HARDENING (2026-11-25, direct instruction) - "Send '✅ Recovered at
+// <time>' on both when back." Only ever called once a real alert was
+// actually sent for the incident being recovered from (runHealthCheck
+// tracks this) - a failure that healed within the 5-minute persistence
+// window, before ever alerting anyone, has nothing to report "recovered"
+// from.
+async function sendRecoveredAlert() {
+  const whatsappAssistant = require('./whatsappAssistant');
+  const text = '✅ Recovered at ' + whatsappAssistant.formatIstDateTime(Date.now());
+  return sendToAlertRecipients(text, '✅ SUBH health check recovered');
 }
 
 // Durable in KV (2026-11-24, direct instruction - see the module comment
@@ -628,6 +655,16 @@ async function sendAlert(failureLines) {
 // 2-minute tick - and now that "while a failure persists" genuinely
 // means persists, not "since this particular process happened to start."
 const RE_ALERT_INTERVAL_MS = 30 * 60 * 1000;
+// HARDENING (2026-11-25, direct instruction) - "when a problem is
+// detected... for more than 5 minutes, send once." Test-only override
+// seam (HEALTH_ALERT_PERSIST_MS) - same convention as this codebase's
+// other real-wait-avoidance seams (e.g. whatsappGatewayV1.js's own
+// WA_V1_RATE_*_MS) - unset in every real environment, always the real
+// 5-minute default there.
+function persistBeforeAlertMs() {
+  const o = Number(process.env.HEALTH_ALERT_PERSIST_MS);
+  return Number.isFinite(o) && o >= 0 ? o : 5 * 60 * 1000;
+}
 const HEALTH_ALERT_DEBOUNCE_KEY = 'wa-health-alert-debounce-state';
 // In-memory fallback (2026-11-24) - kept alongside the durable KV copy,
 // never instead of it: when KV itself is unreachable (its own separate
@@ -642,22 +679,36 @@ const HEALTH_ALERT_DEBOUNCE_KEY = 'wa-health-alert-debounce-state';
 let lastAlertSentAtMemory = 0;
 let wasFailingLastTickMemory = false;
 let consecutiveHealthyTicksMemory = 0;
+let failingSinceMemory = 0;
+let alertSentForIncidentMemory = false;
+function debounceDefaults() { return { lastAlertSentAt: 0, wasFailingLastTick: false, consecutiveHealthyTicks: 0, failingSince: 0, alertSentForIncident: false }; }
+function debounceFromMemory() {
+  return { lastAlertSentAt: lastAlertSentAtMemory, wasFailingLastTick: wasFailingLastTickMemory, consecutiveHealthyTicks: consecutiveHealthyTicksMemory, failingSince: failingSinceMemory, alertSentForIncident: alertSentForIncidentMemory };
+}
 async function getAlertDebounceState() {
   const redis = getRawRedisClient();
-  if (!redis) return { lastAlertSentAt: lastAlertSentAtMemory, wasFailingLastTick: wasFailingLastTickMemory, consecutiveHealthyTicks: consecutiveHealthyTicksMemory };
+  if (!redis) return debounceFromMemory();
   try {
     const raw = await redis.get(HEALTH_ALERT_DEBOUNCE_KEY);
-    if (!raw) return { lastAlertSentAt: 0, wasFailingLastTick: false, consecutiveHealthyTicks: 0 };
+    if (!raw) return debounceDefaults();
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    return { lastAlertSentAt: Number(parsed.lastAlertSentAt) || 0, wasFailingLastTick: Boolean(parsed.wasFailingLastTick), consecutiveHealthyTicks: Number(parsed.consecutiveHealthyTicks) || 0 };
+    return {
+      lastAlertSentAt: Number(parsed.lastAlertSentAt) || 0,
+      wasFailingLastTick: Boolean(parsed.wasFailingLastTick),
+      consecutiveHealthyTicks: Number(parsed.consecutiveHealthyTicks) || 0,
+      failingSince: Number(parsed.failingSince) || 0,
+      alertSentForIncident: Boolean(parsed.alertSentForIncident)
+    };
   } catch (err) {
-    return { lastAlertSentAt: lastAlertSentAtMemory, wasFailingLastTick: wasFailingLastTickMemory, consecutiveHealthyTicks: consecutiveHealthyTicksMemory };
+    return debounceFromMemory();
   }
 }
 async function setAlertDebounceState(state) {
   lastAlertSentAtMemory = state.lastAlertSentAt;
   wasFailingLastTickMemory = state.wasFailingLastTick;
   consecutiveHealthyTicksMemory = state.consecutiveHealthyTicks || 0;
+  failingSinceMemory = state.failingSince || 0;
+  alertSentForIncidentMemory = Boolean(state.alertSentForIncident);
   const redis = getRawRedisClient();
   if (!redis) return;
   try { await redis.set(HEALTH_ALERT_DEBOUNCE_KEY, JSON.stringify(state)); } catch (err) { /* best effort */ }
@@ -706,6 +757,23 @@ async function runHealthCheck() {
   }
   const trulyRecovered = !isFailing && debounce.consecutiveHealthyTicks >= RECOVERY_CONFIRM_TICKS;
 
+  // HARDENING (2026-11-25, direct instruction) - "when a problem is
+  // detected... for more than 5 minutes, send once." A brand new incident
+  // starts counting from here (isFailing, but wasFailingLastTick was
+  // still false going into this tick - the same "just started" signal
+  // the flap-fix above already establishes) - the alert itself waits out
+  // PERSIST_BEFORE_ALERT_MS before ever sending, though the Action-needed
+  // card below is unaffected and still shows immediately (useful for
+  // anyone checking the health page directly, long before the alert
+  // channel fires). A genuinely NEW incident after a confirmed recovery
+  // gets its OWN fresh 5-minute wait, never inheriting an old timer.
+  const justStartedNewIncident = isFailing && !debounce.wasFailingLastTick;
+  if (justStartedNewIncident) {
+    debounce.failingSince = now;
+    debounce.alertSentForIncident = false;
+  }
+  const persistedMs = isFailing ? (now - (debounce.failingSince || now)) : 0;
+
   if (isFailing) {
     // Best-effort - may itself fail to write if KV specifically is the
     // problem, which is fine: the alert below is the channel that
@@ -719,12 +787,22 @@ async function runHealthCheck() {
       const whatsappAssistant = require('./whatsappAssistant');
       await withTimeout(whatsappAssistant.clearSystemHealthAlert(), HEALTH_CHECK_TIMEOUT_MS);
     } catch (err) { /* best effort */ }
+    // HARDENING (2026-11-25, direct instruction) - "Send '✅ Recovered at
+    // <time>' on both when back." Only when an alert was actually sent
+    // for THIS incident - a failure that healed inside the 5-minute
+    // persistence window, before ever reaching anyone, has nothing to
+    // report "recovered" from.
+    if (debounce.alertSentForIncident) {
+      await sendRecoveredAlert().catch(() => {});
+      debounce.alertSentForIncident = false;
+    }
   }
 
   let alertSent = false;
-  if (isFailing && (!debounce.wasFailingLastTick || now - debounce.lastAlertSentAt > RE_ALERT_INTERVAL_MS)) {
+  if (isFailing && persistedMs >= persistBeforeAlertMs() && (!debounce.alertSentForIncident || now - debounce.lastAlertSentAt > RE_ALERT_INTERVAL_MS)) {
     await sendAlert(failures).catch(() => {});
     debounce.lastAlertSentAt = now;
+    debounce.alertSentForIncident = true;
     alertSent = true;
   }
   // wasFailingLastTick only ever flips back to false once TRULY

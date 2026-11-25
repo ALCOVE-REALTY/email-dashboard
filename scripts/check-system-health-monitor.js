@@ -446,6 +446,11 @@ async function main() {
     REDIS_ENV_VARS.forEach((k) => { savedEnv[k] = process.env[k]; delete process.env[k]; });
     process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543210';
     process.env.HR_ADMIN_EMAIL = 'owner@health-monitor-test.local';
+    // This whole flow predates and is orthogonal to the 5-min persistence
+    // gate (HARDENING, 2026-11-25) - zero it out here so every "sends
+    // right away"/"debounced" assertion below keeps meaning what it always
+    // meant; the gate itself gets its OWN dedicated tests further down.
+    process.env.HEALTH_ALERT_PERSIST_MS = '0';
     let whatsappAlertCalls = 0, emailAlertCalls = 0;
     whatsapp.sendWhatsAppMessage = async (phone, text) => { whatsappAlertCalls++; return { ok: true }; };
     gmailService.sendMail = async ({ to, subject, text }) => { emailAlertCalls++; return { id: 'test' }; };
@@ -506,6 +511,8 @@ async function main() {
         const healthAlertAfterRecovery = await whatsappAssistant.getSystemHealthAlert();
         return recoveredAgain.ok === true && healthAlertAfterRecovery === null;
       });
+      await checkAsync('HARDENING (2026-11-25, direct instruction) - "Send \'Recovered at <time>\' on both when back": the SAME confirmed recovery above also sent a recovered message on both channels (an alert WAS actually sent for this incident, back on the very first failing tick, so there is something real to report recovered from)', async () =>
+        whatsappAlertCalls === 2 && emailAlertCalls === 2);
 
       // HARDENING (2026-11-25, direct instruction) - "each problem once (KV
       // debounce)": a FLAPPING metric (bad -> briefly healthy -> bad again,
@@ -517,15 +524,15 @@ async function main() {
       whatsapp.getConnectionStatus = async () => ({ connected: false, status: 'disconnected' });
       const freshBreak = await monitor.runHealthCheck();
       await checkAsync('a genuinely NEW incident (after a confirmed recovery) IS re-alerted right away', async () =>
-        freshBreak.ok === false && freshBreak.alertSent === true && whatsappAlertCalls === 2 && emailAlertCalls === 2);
+        freshBreak.ok === false && freshBreak.alertSent === true && whatsappAlertCalls === 3 && emailAlertCalls === 3);
       whatsapp.getConnectionStatus = async () => ({ connected: true, status: 'connected' });
       const oneHealthyTick = await monitor.runHealthCheck();
-      await checkAsync('one lone healthy tick mid-incident does not yet count as recovered (consistent with the earlier recovery-confirm check)', async () =>
-        oneHealthyTick.ok === true && Boolean(await whatsappAssistant.getSystemHealthAlert()));
+      await checkAsync('one lone healthy tick mid-incident does not yet count as recovered (consistent with the earlier recovery-confirm check), and does NOT yet send a recovered message either', async () =>
+        oneHealthyTick.ok === true && Boolean(await whatsappAssistant.getSystemHealthAlert()) && whatsappAlertCalls === 3 && emailAlertCalls === 3);
       whatsapp.getConnectionStatus = async () => ({ connected: false, status: 'disconnected' });
       const flapsBackBad = await monitor.runHealthCheck();
       await checkAsync('LIVE INCIDENT (2026-11-25), direct instruction, ROOT CAUSE reproduced and fixed - flapping back to bad BEFORE the recovery was ever confirmed does NOT re-send the alert (still the SAME ongoing incident, never bypasses the 30-min re-alert interval) - the exact gap that let a borderline/noisy metric alert on every single flap', async () =>
-        flapsBackBad.ok === false && flapsBackBad.alertSent === false && whatsappAlertCalls === 2 && emailAlertCalls === 2);
+        flapsBackBad.ok === false && flapsBackBad.alertSent === false && whatsappAlertCalls === 3 && emailAlertCalls === 3);
     } finally {
       whatsapp.getConnectionStatus = origGetConnectionStatus;
       whatsapp.listMessages = origListMessages;
@@ -535,7 +542,104 @@ async function main() {
       REDIS_ENV_VARS.forEach((k) => { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k]; });
       delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
       delete process.env.HR_ADMIN_EMAIL;
+      delete process.env.HEALTH_ALERT_PERSIST_MS;
       await whatsappAssistant.clearSystemHealthAlert().catch(() => {});
+    }
+  })();
+
+  console.log('='.repeat(70));
+  console.log('HARDENING (2026-11-25, direct instruction), Part A point 2 - "Alert IT and me on BOTH email and WhatsApp... IT_ALERT_EMAIL... IT_ALERT_WHATSAPP" + the 5-minute persistence gate before the FIRST alert of a new incident');
+  console.log('='.repeat(70));
+  await (async () => {
+    const origGetConnectionStatus2 = whatsapp.getConnectionStatus;
+    const origListMessages2 = whatsapp.listMessages;
+    const origSendWhatsAppMessage2 = whatsapp.sendWhatsAppMessage;
+    const origSendMail2 = gmailService.sendMail;
+    const origFindOwnerEmployeeRecord2 = employeeService.findOwnerEmployeeRecord;
+    whatsapp.getConnectionStatus = async () => ({ connected: false, status: 'disconnected' }); // a clean, simple always-failing lever
+    whatsapp.listMessages = async () => [];
+    employeeService.findOwnerEmployeeRecord = async () => null;
+    try {
+      await checkAsync('IT is a SECOND, independent recipient on both channels (IT_ALERT_WHATSAPP/IT_ALERT_EMAIL) - the owner\'s own existing contact is never replaced, both receive the same alert', async () => {
+        process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543212';
+        process.env.HR_ADMIN_EMAIL = 'owner@it-recipients-test.local';
+        process.env.IT_ALERT_WHATSAPP = '919876500000';
+        process.env.IT_ALERT_EMAIL = 'it@it-recipients-test.local';
+        process.env.HEALTH_ALERT_PERSIST_MS = '0';
+        const whatsappRecipients = [];
+        const emailRecipients = [];
+        whatsapp.sendWhatsAppMessage = async (phone) => { whatsappRecipients.push(phone); return { ok: true }; };
+        gmailService.sendMail = async ({ to }) => { emailRecipients.push(to); return { id: 'test' }; };
+        const freshForThisTest = freshMonitor();
+        await freshForThisTest.setAlertDebounceState({ lastAlertSentAt: 0, wasFailingLastTick: false, consecutiveHealthyTicks: 0, failingSince: 0, alertSentForIncident: false });
+        const result = await freshForThisTest.runHealthCheck();
+        delete process.env.SUBH_OWNER_WHATSAPP_NUMBER; delete process.env.HR_ADMIN_EMAIL;
+        delete process.env.IT_ALERT_WHATSAPP; delete process.env.IT_ALERT_EMAIL; delete process.env.HEALTH_ALERT_PERSIST_MS;
+        return result.alertSent === true && whatsappRecipients.includes('919876543212') && whatsappRecipients.includes('919876500000')
+          && emailRecipients.includes('owner@it-recipients-test.local') && emailRecipients.includes('it@it-recipients-test.local');
+      });
+      await checkAsync('with no IT env vars configured, only the owner\'s own existing channels are used - exactly today\'s behavior, unchanged', async () => {
+        process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543213';
+        process.env.HR_ADMIN_EMAIL = 'owner@no-it-test.local';
+        process.env.HEALTH_ALERT_PERSIST_MS = '0';
+        const whatsappRecipients = [];
+        const emailRecipients = [];
+        whatsapp.sendWhatsAppMessage = async (phone) => { whatsappRecipients.push(phone); return { ok: true }; };
+        gmailService.sendMail = async ({ to }) => { emailRecipients.push(to); return { id: 'test' }; };
+        const freshForThisTest = freshMonitor();
+        await freshForThisTest.setAlertDebounceState({ lastAlertSentAt: 0, wasFailingLastTick: false, consecutiveHealthyTicks: 0, failingSince: 0, alertSentForIncident: false });
+        await freshForThisTest.runHealthCheck();
+        delete process.env.SUBH_OWNER_WHATSAPP_NUMBER; delete process.env.HR_ADMIN_EMAIL; delete process.env.HEALTH_ALERT_PERSIST_MS;
+        return whatsappRecipients.length === 1 && whatsappRecipients[0] === '919876543213' && emailRecipients.length === 1 && emailRecipients[0] === 'owner@no-it-test.local';
+      });
+      await checkAsync('direct instruction - "for more than 5 minutes, send once": a brand new incident that has NOT yet persisted past the gate does not alert anyone yet, even though the Action-needed card is already set (shows immediately on the health page regardless)', async () => {
+        process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543214';
+        process.env.HR_ADMIN_EMAIL = 'owner@persist-test.local';
+        process.env.HEALTH_ALERT_PERSIST_MS = '2000';
+        let calls = 0;
+        whatsapp.sendWhatsAppMessage = async () => { calls++; return { ok: true }; };
+        gmailService.sendMail = async () => { calls++; return { id: 'test' }; };
+        const freshForThisTest = freshMonitor();
+        // Simulates "this incident started 100ms ago" (1900ms inside the
+        // 2000ms gate - a wide margin, not a tight race against the full
+        // gate's own Promise.all of 10 checks under real parallel-suite
+        // CPU contention) - wasFailingLastTick already true so THIS tick
+        // is treated as a continuation, never a fresh start that would
+        // reset the clock to now.
+        await freshForThisTest.setAlertDebounceState({ lastAlertSentAt: 0, wasFailingLastTick: true, consecutiveHealthyTicks: 0, failingSince: Date.now() - 100, alertSentForIncident: false });
+        const result = await freshForThisTest.runHealthCheck();
+        const cardIsSet = Boolean(await whatsappAssistant.getSystemHealthAlert());
+        delete process.env.SUBH_OWNER_WHATSAPP_NUMBER; delete process.env.HR_ADMIN_EMAIL; delete process.env.HEALTH_ALERT_PERSIST_MS;
+        await whatsappAssistant.clearSystemHealthAlert().catch(() => {});
+        return result.ok === false && result.alertSent === false && calls === 0 && cardIsSet === true;
+      });
+      await checkAsync('the SAME ongoing incident, once it HAS persisted past the gate, alerts exactly once', async () => {
+        process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543215';
+        process.env.HR_ADMIN_EMAIL = 'owner@persist-test-2.local';
+        process.env.HEALTH_ALERT_PERSIST_MS = '50';
+        let calls = 0;
+        whatsapp.sendWhatsAppMessage = async () => { calls++; return { ok: true }; };
+        gmailService.sendMail = async () => { calls++; return { id: 'test' }; };
+        const freshForThisTest = freshMonitor();
+        // "this incident started 5s ago" - comfortably past the 50ms gate,
+        // a wide margin in the OTHER direction from the test above (no
+        // race here either way: real time only ever moves forward, so a
+        // seed this far in the past can never fail to have "persisted
+        // long enough" by the time this tick finishes, regardless of how
+        // much CPU contention delays that finish).
+        await freshForThisTest.setAlertDebounceState({ lastAlertSentAt: 0, wasFailingLastTick: true, consecutiveHealthyTicks: 0, failingSince: Date.now() - 5000, alertSentForIncident: false });
+        const result = await freshForThisTest.runHealthCheck();
+        delete process.env.SUBH_OWNER_WHATSAPP_NUMBER; delete process.env.HR_ADMIN_EMAIL; delete process.env.HEALTH_ALERT_PERSIST_MS;
+        await whatsappAssistant.clearSystemHealthAlert().catch(() => {});
+        return result.ok === false && result.alertSent === true && calls === 2; // 1 WhatsApp + 1 email
+      });
+    } finally {
+      whatsapp.getConnectionStatus = origGetConnectionStatus2;
+      whatsapp.listMessages = origListMessages2;
+      whatsapp.sendWhatsAppMessage = origSendWhatsAppMessage2;
+      gmailService.sendMail = origSendMail2;
+      employeeService.findOwnerEmployeeRecord = origFindOwnerEmployeeRecord2;
+      await freshMonitor().setAlertDebounceState({ lastAlertSentAt: 0, wasFailingLastTick: false, consecutiveHealthyTicks: 0, failingSince: 0, alertSentForIncident: false }).catch(() => {});
     }
   })();
 
@@ -818,6 +922,7 @@ async function main() {
     process.env.WHATSAPP_GATEWAY = 'new';
     process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543211';
     process.env.HR_ADMIN_EMAIL = 'owner@health-monitor-restart-test.local';
+    process.env.HEALTH_ALERT_PERSIST_MS = '0'; // this test is about restart-survival, not the (separately tested) 5-min persistence gate
     gatewayV1.getNumberStatus = async () => ({ status: 'relink_required', connected: false });
     gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
     // sendAlert routes through whatsappGatewayFacade (not whatsappService
@@ -858,6 +963,7 @@ async function main() {
       delete process.env.WHATSAPP_GATEWAY;
       delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
       delete process.env.HR_ADMIN_EMAIL;
+      delete process.env.HEALTH_ALERT_PERSIST_MS;
       await whatsappAssistant.clearSystemHealthAlert().catch(() => {});
       const freshForCleanup = freshMonitor();
       await freshForCleanup.setAlertDebounceState({ lastAlertSentAt: 0, wasFailingLastTick: false }).catch(() => {});
