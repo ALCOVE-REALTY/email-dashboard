@@ -1706,6 +1706,12 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   const runbookTemplateText = await page.locator('#hrRunbookItTemplate').textContent().catch(() => '');
   check('Runbook: the ready-to-send IT message template renders', /has not been replying since/.test(runbookTemplateText || '') && /Screenshots attached/.test(runbookTemplateText || ''), 'got: ' + JSON.stringify(runbookTemplateText));
   await page.click('#hrRunbookCopyBtn');
+  // ROOT CAUSE of a real flake under the full parallel gate's own CPU
+  // contention: the button's text update happens AFTER an awaited
+  // navigator.clipboard.writeText() call, not synchronously inside the
+  // click handler - normally resolves near-instantly, but a bare
+  // immediate check (no wait at all) raced it under heavy load and lost.
+  await page.waitForTimeout(250);
   check('Runbook: "Copy" button flips to "Copied ✓"', (await page.locator('#hrRunbookCopyBtn').textContent().catch(() => '')).includes('Copied'));
   const runbookErrAfter = consoleErrors.length + pageErrors.length;
   check('Runbook: no JS error was thrown opening the page or copying the template', runbookErrAfter === runbookErrBefore,

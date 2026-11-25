@@ -273,6 +273,51 @@ async function resolveCompanyFilter(hint) {
   const byName = companies.find((c) => c.company && String(c.company).toLowerCase().includes(t));
   return byName ? byName.company : hint;
 }
+// Same lookup as resolveCompanyFilter, but returns null on no real match
+// instead of echoing the raw hint back - resolveCompanyFilter's fallback
+// is right for "I already decided this IS a company hint, resolve its
+// display name"; classifyPlaceHint below needs to tell "matched a real
+// company" apart from "matched nothing", which resolveCompanyFilter's
+// own return value can't do (it always returns something non-null).
+async function strictCompanyMatch(hint) {
+  if (!hint) return null;
+  const companies = await companyDetailsService.listCompanyDetails().catch(() => []);
+  const t = String(hint).trim().toLowerCase();
+  const byCode = companies.find((c) => c.code && String(c.code).trim().toLowerCase() === t);
+  if (byCode) return byCode.company;
+  const byName = companies.find((c) => c.company && String(c.company).toLowerCase().includes(t));
+  return byName ? byName.company : null;
+}
+// HR reports fix (2026-11-25), direct instruction, Part B item 3 -
+// multi-field filter resolution. For ONE place/entity word, finds every
+// REAL column it could belong to - Location, Company Location,
+// Department (each via its own alias system first, THEN falling back to
+// a direct substring match against values actually present in the real
+// directory, since a hint can be the real stored value itself with no
+// alias registered at all - e.g. "HO" is often the literal Location
+// value, never an alias of something else) - and Company (via the real
+// company list, never the raw-hint fallback - see strictCompanyMatch
+// above). Returns one entry per field that matched anything, each with
+// every distinct value it matched (more than one value = genuinely
+// ambiguous within that one field, same as matching more than one field
+// at all - both are the caller's cue to ask rather than guess).
+async function classifyPlaceHint(hint, employees) {
+  const wa = getWhatsappAssistant();
+  const aliasLoc = (typeof wa.resolveSiteAliasValues === 'function') ? wa.resolveSiteAliasValues(hint) : [];
+  const aliasCompLoc = (typeof wa.resolveCompanyLocationAliasValues === 'function') ? wa.resolveCompanyLocationAliasValues(hint) : [];
+  const aliasDept = (typeof wa.resolveDeptAliasValues === 'function') ? wa.resolveDeptAliasValues(hint) : [];
+  const directValues = (field) => Array.from(new Set((employees || []).filter((e) => e[field] && matchesSubstring(e[field], hint)).map((e) => e[field])));
+  const locationValues = (aliasLoc && aliasLoc.length) ? aliasLoc : directValues('location');
+  const companyLocationValues = (aliasCompLoc && aliasCompLoc.length) ? aliasCompLoc : directValues('companyLocation');
+  const departmentValues = (aliasDept && aliasDept.length) ? aliasDept : directValues('department');
+  const companyMatch = await strictCompanyMatch(hint);
+  const matches = [];
+  if (locationValues.length) matches.push({ field: 'location', values: locationValues });
+  if (companyLocationValues.length) matches.push({ field: 'companyLocation', values: companyLocationValues });
+  if (departmentValues.length) matches.push({ field: 'department', values: departmentValues });
+  if (companyMatch) matches.push({ field: 'company', values: [companyMatch] });
+  return matches;
+}
 
 // PURE and synchronous - same split/convention as the existing engine's
 // own filterEmployeesForHrQuery: alias/company-code resolution (async,
@@ -315,6 +360,18 @@ function filterEmployeesForReport(employees, query) {
     // system, unlike Site/Department/Company names).
     if (query.reportingDoer && !matchesSubstring(e.reportingDoer, query.reportingDoer)) return false;
     if (query.reportingManager && !matchesSubstring(e.reportingManager, query.reportingManager)) return false;
+    // HR reports fix (2026-11-25), direct instruction, Part B item 3 -
+    // multi-field filter resolution. UNLIKE resolvedLocations/
+    // resolvedCompanyLocations above (which OR together - one hint,
+    // ambiguous between the two fields), these come from classifyPlaceHint
+    // having already cleanly resolved EACH hint to its OWN specific field -
+    // so these are separate, ALWAYS-AND conditions: "The curve HO" means
+    // Company Location IS The Curve's real value AND Location IS HO,
+    // never either/or.
+    if (query.placeLocation && query.placeLocation.length && !query.placeLocation.includes(e.location)) return false;
+    if (query.placeCompanyLocation && query.placeCompanyLocation.length && !query.placeCompanyLocation.includes(e.companyLocation)) return false;
+    if (query.placeDepartment && query.placeDepartment.length && !query.placeDepartment.includes(e.department)) return false;
+    if (query.placeCompany && !matchesSubstring(e.company, query.placeCompany)) return false;
     if (query.dojMonth) {
       if (!e.doj) return false;
       if (e.doj.getMonth() + 1 !== Number(query.dojMonth)) return false;
@@ -387,7 +444,15 @@ function siteDisplayLabel(resolvedValue, originalHint) {
 // a code to the real company name (and falls back to the raw hint only
 // when nothing could be resolved at all), so resolvedCompany is always
 // the right value to use here - no new lookup needed.
-function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLocations, companyHint, resolvedCompany, departmentHint, reportingDoerHint, reportingManagerHint }) {
+function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLocations, companyHint, resolvedCompany, departmentHint, reportingDoerHint, reportingManagerHint, placeDisplayParts }) {
+  // HR reports fix (2026-11-25), direct instruction, Part B item 3 -
+  // "use the resolved display value (e.g. 'The Curve — HO — Active
+  // staff · 4'), not 'Site (Curve)'." Each part is already a genuine
+  // resolved value (classifyPlaceHint only ever returns a REAL match),
+  // never the raw hint - joined in the order the sender's own words
+  // were resolved, highest priority since placeHints represents the
+  // most specific thing actually said.
+  if (placeDisplayParts && placeDisplayParts.length) return placeDisplayParts.join(' — ');
   if (locationHint) {
     const resolved = (resolvedLocations && resolvedLocations.length) ? resolvedLocations[0]
       : ((resolvedCompanyLocations && resolvedCompanyLocations.length) ? resolvedCompanyLocations[0] : null);
@@ -415,7 +480,8 @@ async function resolveOneTargetFromFilters(filters, employees) {
     resolvedCompany: resolvedFilters.resolvedCompany,
     departmentHint: filters.department,
     reportingDoerHint: filters.reportingDoer,
-    reportingManagerHint: filters.reportingManager
+    reportingManagerHint: filters.reportingManager,
+    placeDisplayParts: filters.placeDisplayParts
   });
   return { locationHint: filters.location, filters, candidates, label, statusLabel: titleCaseStatus(filters.status) };
 }
@@ -440,7 +506,12 @@ function hrReportRequestTool() {
           department: { type: 'string', description: 'Department name or a distinctive substring, exactly as the sender said it - omit if none named.' },
           reportingDoer: { type: 'string', description: 'A Reporting DOER\'s name, when the sender is asking for the roster of everyone under a named Doer (e.g. "Archana Shroff er doer list dao" -> "Archana Shroff") - omit if none named.' },
           reportingManager: { type: 'string', description: 'An HOD\'s name, when the sender is asking for the roster of everyone under a named HOD (e.g. "Tanmoy Mondal-er under-e kara achen?" -> "Tanmoy Mondal") - omit if none named.' },
-          locations: { type: 'array', items: { type: 'string' }, description: 'One entry per DISTINCT site/location the sender named, in the order they said them (e.g. "Sangam & Triveni" -> ["Sangam","Triveni"]) - each becomes its own separate report. Omit entirely (empty array) if no site was mentioned at all.' },
+          locations: { type: 'array', items: { type: 'string' }, description: 'One entry per DISTINCT site/location the sender named, when they want a SEPARATE report for EACH - e.g. "Sangam & Triveni" -> ["Sangam","Triveni"] (two different places, joined by "and"/"&", each its own report). Never use this for a single request that names more than one word together describing ONE place/filter (e.g. "The curve HO" - one compound description of one target) - use placeHints below for that instead. Omit entirely (empty array) if no site was mentioned at all.' },
+          placeHints: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'One entry per distinct word/phrase in the message that names a place, site, company-location, department, or company - when you are NOT sure (or it genuinely could be more than one) which single column it belongs to, OR the sender used more than one such word together to describe ONE combined target (e.g. "The curve HO staff list dao" -> ["The curve","HO"] - one report, narrowed by BOTH). Code resolves each against every real column (Location, Company Location, Department, Company) and combines them with AND; never guess the column yourself. Do NOT put the same word in both `locations` and here. Omit entirely if nothing like this was named, or everything was already confidently captured in locations/company/department above.'
+          },
           company: { type: 'string', description: 'Company name or company code, exactly as the sender said it (e.g. "ADLLP") - omit if none named.' },
           employmentType: { type: 'string', description: '"Probation" or "Confirmed" - omit if not mentioned.' },
           collarType: { type: 'string', description: 'Collar/group type if mentioned (e.g. "White", "Blue") - omit if not mentioned.' },
@@ -649,6 +720,27 @@ const REPORT_READY_INTERIM_TEXT = {
   hinglish: 'Report taiyaar kar ke bhej raha hoon…',
   english: 'Preparing your report, sending it shortly…'
 };
+// HR reports fix (2026-11-25), direct instruction, Part B item 3 - "Never
+// drop an unresolved filter: resolve it or ask; never send an unfiltered
+// report when the sender asked for a filter." A hint that matches NOTHING
+// anywhere (e.g. "Duets", the live bug) gets this honest reply instead of
+// silently sending everyone.
+const PLACE_HINT_UNRESOLVED_TEXT = {
+  banglish: (hint) => '"' + hint + '" ei naam-e kono site, company location, department, ba company khuje pelam na. Bananta thik ache ki check korun, ba onno bhabe bolun.',
+  hinglish: (hint) => '"' + hint + '" naam ka koi site, company location, department, ya company nahi mila. Spelling check kijiye ya alag tarike se bataiye.',
+  english: (hint) => 'Could not find any site/company location/department/company matching "' + hint + '" - please check the spelling or phrase it differently.'
+};
+// "If a word matches several columns or several values, ask one short
+// question" - a single clarifying reply, not a remembered multi-turn
+// flow (a deliberate, bounded scope call for this fix - a genuinely
+// ambiguous word is rare next to the two live bugs this fix targets,
+// silently-wrong-field and silently-dropped).
+const PLACE_HINT_AMBIGUOUS_TEXT = {
+  banglish: (hint, options) => '"' + hint + '" ei naam-ta ekadhik jayga-y mile geche: ' + options + '. Ektu specific kore abar bolun (jemon "Location: HO" othoba "Department: HR").',
+  hinglish: (hint, options) => '"' + hint + '" yeh naam ek se zyada jagah match hua: ' + options + '. Thoda specific karke dobara bataiye (jaise "Location: HO" ya "Department: HR").',
+  english: (hint, options) => '"' + hint + '" matches more than one thing: ' + options + '. Please say it more specifically (e.g. "Location: HO" or "Department: HR").'
+};
+const PLACE_FIELD_DISPLAY_NAME = { location: 'Location', companyLocation: 'Company Location', department: 'Department', company: 'Company' };
 // A direct-send report normally has NO separate text reply (the document
 // + caption ARE the reply) - but a restricted column asked for and left
 // out still needs to be SAID, not silently dropped, so this is the one
@@ -969,6 +1061,36 @@ async function beginReportRequest({ phone, name, lang, text, extracted, senderEm
     reportingDoer: extracted.reportingDoer || null,
     reportingManager: extracted.reportingManager || null
   };
+  // HR reports fix (2026-11-25), direct instruction, Part B item 3 -
+  // multi-field filter resolution. Each placeHints entry is classified
+  // against every real column BEFORE any target is built - "never send
+  // an unfiltered report when the sender asked for a filter" means this
+  // has to settle (or honestly fail) up front, never fall through to an
+  // unfiltered result. A clean single-field, single-value match for each
+  // hint accumulates into baseFilters.place* (AND-combined - see
+  // filterEmployeesForReport's own comment on why these are separate
+  // from the OR-style resolvedLocations/resolvedCompanyLocations used by
+  // the `locations` array above); display values are kept alongside for
+  // the caption (deriveTargetLabel).
+  const placeDisplayParts = [];
+  for (const hint of (extracted.placeHints || [])) {
+    const matches = await classifyPlaceHint(hint, employees);
+    if (!matches.length) {
+      return { case: 'hr_report', replyText: (PLACE_HINT_UNRESOLVED_TEXT[lang] || PLACE_HINT_UNRESOLVED_TEXT.english)(hint), summaryForOwner: text.slice(0, 160), lang };
+    }
+    const totalValues = matches.reduce((n, m) => n + m.values.length, 0);
+    if (matches.length > 1 || totalValues > 1) {
+      const options = matches.flatMap((m) => m.values.map((v) => PLACE_FIELD_DISPLAY_NAME[m.field] + ': ' + v)).join(', ');
+      return { case: 'hr_report', replyText: (PLACE_HINT_AMBIGUOUS_TEXT[lang] || PLACE_HINT_AMBIGUOUS_TEXT.english)(hint, options), summaryForOwner: text.slice(0, 160), lang };
+    }
+    const { field, values } = matches[0];
+    if (field === 'location') baseFilters.placeLocation = (baseFilters.placeLocation || []).concat(values);
+    else if (field === 'companyLocation') baseFilters.placeCompanyLocation = (baseFilters.placeCompanyLocation || []).concat(values);
+    else if (field === 'department') baseFilters.placeDepartment = (baseFilters.placeDepartment || []).concat(values);
+    else if (field === 'company') baseFilters.placeCompany = values[0];
+    placeDisplayParts.push(values[0]);
+  }
+  if (placeDisplayParts.length) baseFilters.placeDisplayParts = placeDisplayParts;
   // HR reports fix 2/5 (2026-11-24), direct instruction - "a filter on a
   // Personal derived field counts as using it" - a filter-only field
   // (not also requested as a rendered column) still needs to count
@@ -1145,6 +1267,7 @@ module.exports = {
   filterEmployeesForReport,
   resolveReportFilters,
   resolveCompanyFilter,
+  classifyPlaceHint,
   resolveOneTargetFromFilters,
   siteDisplayLabel,
   buildGroupedRows,

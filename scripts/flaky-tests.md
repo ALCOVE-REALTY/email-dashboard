@@ -143,8 +143,9 @@ dedicated look if it keeps recurring, though out of scope for this
 migration.)
 
 ## check-subh-panel-ui.js
-Flaked on 2026-11-23T10:31:56.125Z - failed once, passed on a lone solo retry.
+Flaked on 2026-11-25T12:37:33.084Z - failed once, passed on a lone solo retry.
 ```
+[ok] Settings history: the real #wfTopbar stayed in .wf-shell (never relocated into the SUBH panel) and the panel itself is closed
 [ok] Settings history: real top bar is visible with all 5 elements (hamburger, wordmark, refresh, SUBH button, profile photo)
 [ok] Settings history: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close
 [ok] Settings history: its own top-level view (#settingsHistoryView) is visible
@@ -180,10 +181,9 @@ item 8 - native pull-to-refresh preconditions on a SUBH-Settings sub-page (vs. a
 [ok] Reminders: still has its OWN custom pull-to-refresh indicator, untouched
 [ok] item 8: no JS error was thrown through the whole doc-scroll/body-lock toggle flow
 [info] 1 pre-existing page-load error(s) from the main dashboard (unrelated to the SUBH panel, not counted as a failure): ["Failed to load resource: the server responded with a status of 404 (Not Found)","Failed to load resource: the server responded with a status of 400 (Bad Request)","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')"]
-279/281 passed, 2 FAILED
+286/287 passed, 1 FAILED
 Failed checks:
- - Letter settings: "Send test to me" REALLY shows a visible loading state while in flight (disabled + its text hidden via color:transparent, not just the class present in the DOM with no matching CSS) -- got: {"isLoading":false,"disabled":true,"color":"rgba(0, 0, 0, 0)"}
- - Letter settings: "Send test to me" shows a REAL visible green success tick once the request resolves -- got: {"isSuccess":false,"bg":"rgb(238, 240, 255)"}
+ - Runbook: "Copy" button flips to "Copied ✓"
 ```
 
 ## check-whatsapp-engine.js

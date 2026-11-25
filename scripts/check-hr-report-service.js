@@ -128,6 +128,12 @@ async function main() {
     return byDoer.length === 1 && byDoer[0].employeeId === 'E001' // Bob (E002) is INACTIVE, excluded by default - same as the designation test above
       && byManager.length === 2 && byManager.some((e) => e.employeeId === 'E003') && byManager.some((e) => e.employeeId === 'E004'); // both Carol and Dave report to Radha Biswas
   })());
+  check('HR reports fix (2026-11-25), direct instruction, Part B item 3 - placeLocation/placeCompanyLocation/placeDepartment/placeCompany are ALWAYS-AND conditions (never OR, unlike resolvedLocations/resolvedCompanyLocations below) - each from a SEPARATE word the sender used, cleanly resolved to its own specific column', (() => {
+    const combined = hrReportService.filterEmployeesForReport(FAKE_EMPLOYEES, { placeLocation: ['Ballygunge'], placeDepartment: ['Civil'] });
+    const combinedNoMatch = hrReportService.filterEmployeesForReport(FAKE_EMPLOYEES, { placeLocation: ['Ballygunge'], placeDepartment: ['HR Dept'] });
+    return combined.length === 1 && combined[0].employeeId === 'E001' // Ballygunge AND Civil - only Alice
+      && combinedNoMatch.length === 0; // Ballygunge AND HR Dept - no single employee is both
+  })());
   check('resolvedLocations (pre-resolved via a confirmed site alias) filters by the REAL value(s), ignoring the raw `location` hint', (() => {
     const rows = hrReportService.filterEmployeesForReport(FAKE_EMPLOYEES, { resolvedLocations: ['Srirampur'] });
     return rows.length === 1 && rows[0].employeeId === 'E003';
@@ -818,6 +824,78 @@ async function main() {
     });
     const after = (await whatsappAssistant.listPendingApprovals()).length;
     return after === before + 1 && !result.pendingDocuments;
+  });
+
+  console.log('='.repeat(70));
+  console.log('HR reports fix (2026-11-25), direct instruction, Part B item 3 - multi-field filter resolution: "The curve HO staff list dao" (Company Location AND Location combined) and "Amake duets site er list dao" (an unresolved filter must never be silently dropped)');
+  console.log('='.repeat(70));
+  const PLACE_HINT_EMPLOYEES = [
+    { employeeId: 'PH001', name: 'A', designation: 'Engineer', department: 'Civil', location: 'HO', companyLocation: 'The Curve Tower', company: 'Alcove Developers LLP', status: 'ACTIVE', doj: new Date('2024-01-01') },
+    { employeeId: 'PH002', name: 'B', designation: 'Engineer', department: 'Civil', location: 'Sangam', companyLocation: 'The Curve Tower', company: 'Alcove Developers LLP', status: 'ACTIVE', doj: new Date('2024-01-01') },
+    { employeeId: 'PH003', name: 'C', designation: 'Engineer', department: 'HR Dept', location: 'HO', companyLocation: 'Plot A', company: 'Alcove Developers LLP', status: 'ACTIVE', doj: new Date('2024-01-01') }
+  ];
+  await checkAsync('classifyPlaceHint: a hint resolves via its own alias system when one is confirmed (Company Location), and via a direct substring match against REAL field values when no alias is registered at all (Location) - the exact two mechanisms both live bugs needed', async () => {
+    await whatsappAssistant.saveCompanyLocAlias({ alias: 'The Curve', companyLocationValue: 'The Curve Tower', confirmed: true });
+    await whatsappAssistant.refreshCompanyLocAliasCacheNow();
+    try {
+      const curveMatches = await hrReportService.classifyPlaceHint('The Curve', PLACE_HINT_EMPLOYEES);
+      const hoMatches = await hrReportService.classifyPlaceHint('HO', PLACE_HINT_EMPLOYEES);
+      return curveMatches.length === 1 && curveMatches[0].field === 'companyLocation' && curveMatches[0].values[0] === 'The Curve Tower'
+        && hoMatches.length === 1 && hoMatches[0].field === 'location' && hoMatches[0].values[0] === 'HO';
+    } finally {
+      const all = await whatsappAssistant.listCompanyLocAliases();
+      for (const a of all) { if (a.alias === 'The Curve') await whatsappAssistant.deleteCompanyLocAlias(a.id); }
+      await whatsappAssistant.refreshCompanyLocAliasCacheNow();
+    }
+  });
+  await checkAsync('classifyPlaceHint: a word matching nothing anywhere (Location/Company Location/Department/Company) returns an empty array - the caller\'s cue to ask/fail honestly, never silently drop the filter', async () => {
+    const matches = await hrReportService.classifyPlaceHint('Duets', PLACE_HINT_EMPLOYEES);
+    return Array.isArray(matches) && matches.length === 0;
+  });
+  await checkAsync('classifyPlaceHint: a word matching MULTIPLE distinct values within one field (e.g. Civil is a department shared by several real departments in this fixture... using a word that matches 2 distinct locations instead) returns multiple values - the caller\'s cue to ask, never guess one', async () => {
+    const ambiguousFixture = [
+      { employeeId: 'AM1', name: 'X', department: 'Civil', location: 'Sangam North', status: 'ACTIVE' },
+      { employeeId: 'AM2', name: 'Y', department: 'Civil', location: 'Sangam South', status: 'ACTIVE' }
+    ];
+    const matches = await hrReportService.classifyPlaceHint('Sangam', ambiguousFixture);
+    return matches.length === 1 && matches[0].field === 'location' && matches[0].values.length === 2;
+  });
+  await checkAsync('LIVE BUG, exact phrasing - "The curve HO staff list dao": The Curve resolves as a Company Location AND HO resolves as a Location, combined with AND - only the ONE employee at both gets the report, caption uses the resolved display values ("The Curve Tower — HO"), never "Site (Curve)"', async () => {
+    await whatsappAssistant.saveCompanyLocAlias({ alias: 'The Curve', companyLocationValue: 'The Curve Tower', confirmed: true });
+    await whatsappAssistant.refreshCompanyLocAliasCacheNow();
+    try {
+      const result = await hrReportService.handleHrReportRequest({
+        phone: '919000000095', name: 'Someone', lang: 'banglish', text: 'The curve HO staff list dao', history: [],
+        senderEmployee: null, employees: PLACE_HINT_EMPLOYEES,
+        deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', placeHints: ['The curve', 'HO'], columns: ['Emp Code', 'Name'], language: 'banglish' }) }
+      });
+      const target = result && result.pendingDocuments && result.pendingDocuments.targets[0];
+      return Boolean(target) && target.candidates.length === 1 && target.candidates[0].employeeId === 'PH001' && target.label === 'The Curve Tower — HO';
+    } finally {
+      const all = await whatsappAssistant.listCompanyLocAliases();
+      for (const a of all) { if (a.alias === 'The Curve') await whatsappAssistant.deleteCompanyLocAlias(a.id); }
+      await whatsappAssistant.refreshCompanyLocAliasCacheNow();
+    }
+  });
+  await checkAsync('LIVE BUG, exact phrasing - "Amake duets site er list dao": Duets does not resolve to anything real - an honest "could not find" reply, NEVER the old silent-drop bug (which used to send ALL 463 active staff, unfiltered)', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000096', name: 'Someone', lang: 'banglish', text: 'Amake duets site er list dao', history: [],
+      senderEmployee: null, employees: PLACE_HINT_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', placeHints: ['Duets'], columns: ['Emp Code', 'Name'], language: 'banglish' }) }
+    });
+    return !result.pendingDocuments && /duets/i.test(result.replyText || '') && /could not find|khuje pelam na/i.test(result.replyText || '');
+  });
+  await checkAsync('a placeHints word matching more than one real value asks ONE short clarifying question instead of guessing or sending an unfiltered report', async () => {
+    const ambiguousFixture = [
+      { employeeId: 'AM1', name: 'X', department: 'Civil', location: 'Sangam North', status: 'ACTIVE' },
+      { employeeId: 'AM2', name: 'Y', department: 'Civil', location: 'Sangam South', status: 'ACTIVE' }
+    ];
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000097', name: 'Someone', lang: 'english', text: 'Sangam er staff list dao', history: [],
+      senderEmployee: null, employees: ambiguousFixture,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', placeHints: ['Sangam'], columns: ['Emp Code', 'Name'], language: 'english' }) }
+    });
+    return !result.pendingDocuments && /more than one/i.test(result.replyText || '') && /Sangam North/.test(result.replyText || '') && /Sangam South/.test(result.replyText || '');
   });
 
   console.log('='.repeat(70));
