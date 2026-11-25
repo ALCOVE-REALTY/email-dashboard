@@ -120,7 +120,7 @@ const SHELL_AND_CONTENT_BUDGET_MS = 300;
 // public/hrAssistant.js and src/views/workforce.html directly).
 // ---------------------------------------------------------------------
 const SETTINGS_PAGES = [
-  { name: 'Site names', btnId: 'subhSettingsSiteNamesBtn', viewId: 'siteAliasesView', listId: 'hrSiteAliasesList' },
+  { name: 'Location names', btnId: 'subhSettingsSiteNamesBtn', viewId: 'siteAliasesView', listId: 'hrSiteAliasesList' },
   { name: 'Department names', btnId: 'subhSettingsDeptNamesBtn', viewId: 'deptAliasesView', listId: 'hrDeptAliasesList' },
   { name: 'Company details', btnId: 'subhSettingsCompanyDetailsBtn', viewId: 'companyDetailsView', listId: 'hrCompanyDetailsList' },
   { name: 'Letter settings', btnId: 'subhSettingsLetterSettingsBtn', viewId: 'letterSettingsView', listId: 'hrLetterCodesList' },

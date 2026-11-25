@@ -829,8 +829,8 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   // close, walking real browser history back past this page entirely.
   await page.evaluate(() => { window.__hrAssistantOpenSiteAliases(); });
   await page.waitForTimeout(250);
-  check('Site names page opens (not a blank page)', await page.locator('#hrSiteAliasesPage').isVisible());
-  await checkTopLevelSettingsSubpageFrame(page, 'Site names', 'siteAliases', topbarBaseline);
+  check('Location names page opens (not a blank page)', await page.locator('#hrSiteAliasesPage').isVisible());
+  await checkTopLevelSettingsSubpageFrame(page, 'Location names', 'siteAliases', topbarBaseline);
 
   await page.evaluate(() => { window.__hrAssistantOpenDeptAliases(); });
   await page.waitForTimeout(250);
@@ -1036,13 +1036,13 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
     await page.waitForTimeout(100);
     await page.evaluate(() => { window.__hrAssistantOpenSiteAliases(); });
     await page.waitForTimeout(300);
-    check('Site names: the "New site found" card shows BOTH Decline and Confirm buttons', await page.locator('#hrNewSitesList [data-action="decline"]').isVisible() && await page.locator('#hrNewSitesList [data-action="confirm"]').isVisible());
+    check('Location names: the "New location found" card shows BOTH Decline and Confirm buttons', await page.locator('#hrNewSitesList [data-action="decline"]').isVisible() && await page.locator('#hrNewSitesList [data-action="confirm"]').isVisible());
     await page.locator('#hrNewSitesList [data-action="decline"]').click();
     await page.waitForTimeout(900); // runButtonAction's own success delay + the row's own close transition
-    check('Site names: Decline posts the real siteValue to the real decline route', Boolean(declineSiteBody) && declineSiteBody.siteValue === 'Fake-New-Site', 'got: ' + JSON.stringify(declineSiteBody));
-    check('Site names: the card is gone from the list after declining', await page.locator('#hrNewSitesList [data-site]').count() === 0);
+    check('Location names: Decline posts the real siteValue to the real decline route', Boolean(declineSiteBody) && declineSiteBody.siteValue === 'Fake-New-Site', 'got: ' + JSON.stringify(declineSiteBody));
+    check('Location names: the card is gone from the list after declining', await page.locator('#hrNewSitesList [data-site]').count() === 0);
     const siteErrAfter = consoleErrors.length + pageErrors.length;
-    check('Site names: no JS error was thrown opening the page or declining a new site', siteErrAfter === siteErrBefore,
+    check('Location names: no JS error was thrown opening the page or declining a new site', siteErrAfter === siteErrBefore,
       'new errors: ' + JSON.stringify(consoleErrors.slice(siteErrBefore).concat(pageErrors.slice(siteErrBefore))));
   }
   {

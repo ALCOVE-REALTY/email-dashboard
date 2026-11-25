@@ -35,7 +35,7 @@ const GROUP_LABELS = {
   'letter-counter': 'Letter counters',
   'letter-register-sheet': 'Letter Register sheet',
   'drive-template-mapping': 'Drive template field mappings',
-  'site-alias': 'Site names',
+  'site-alias': 'Location names',
   'dept-alias': 'Department names',
   'reply-template': 'Saved reply templates',
   'holidays': 'Holidays', // PHASE 2 (2026-11), direct instruction

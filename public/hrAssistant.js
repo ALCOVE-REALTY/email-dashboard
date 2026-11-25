@@ -3711,7 +3711,7 @@
   function newSiteCardHtml(item) {
     const suggested = (item.suggestedAliases || []).join(', ');
     return '<div class="wf-auto-task-card" data-site="' + escapeHtml(item.siteValue) + '">' +
-      '<div class="wf-auto-task-subject">New site found: ' + escapeHtml(item.siteValue) + '</div>' +
+      '<div class="wf-auto-task-subject">New location found: ' + escapeHtml(item.siteValue) + '</div>' +
       '<label class="wf-rem-field"><span>Aliases (edit if needed, comma-separated - leave blank if none needed)</span>' +
       '<input type="text" data-role="new-site-aliases" value="' + escapeHtml(suggested) + '" /></label>' +
       // LIVE BUG FIX (2026-11), direct instruction, item 5 - "Decline" next
@@ -3753,7 +3753,7 @@
           });
         });
       }
-      if (!aliases.length) { siteAliasesList.innerHTML = '<div class="wf-rem-empty">No site names saved yet.</div>'; }
+      if (!aliases.length) { siteAliasesList.innerHTML = '<div class="wf-rem-empty">No location names saved yet.</div>'; }
       else {
         // Grouped by siteValue, in first-seen order (stable across loads
         // since the backend already returns them in a consistent order).
@@ -3809,7 +3809,7 @@
       pageDataCache.siteAliases = { aliases, newSites };
       renderSiteAliasesPage(aliases, newSites);
     } catch (err) {
-      if (!cached) siteAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load site names.</div>';
+      if (!cached) siteAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load location names.</div>';
       // else: keep showing the still-valid cached render
     }
   }
