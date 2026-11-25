@@ -1591,13 +1591,48 @@ async function clearReplyPending(chatId) {
 async function checkReplyLatencyWatchdog(now) {
   const redis = getClient();
   if (!redis) return { flagged: 0 };
-  const ids = (await redis.smembers(REPLY_PENDING_IDS_KEY).catch(() => [])) || [];
+  // .map(String) - the Upstash client can hand back an all-digit SET
+  // member as a real JS number rather than a string (same defensive fix
+  // already applied at listKnownContacts/line 363) - harmless everywhere
+  // this was only ever string-concatenated, but genuinely wrong now that
+  // the stale-conversion branch below stores chatId directly as a
+  // reminder's sourceRef (a number there would never strict-equal the
+  // string phone a caller filters by).
+  const ids = ((await redis.smembers(REPLY_PENDING_IDS_KEY).catch(() => [])) || []).map(String);
   let flagged = 0;
   for (const chatId of ids) {
     try {
       const raw = await redis.get(REPLY_PENDING_PREFIX + chatId);
       if (!raw) { await redis.srem(REPLY_PENDING_IDS_KEY, chatId).catch(() => {}); continue; }
       const entry = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      // LIVE INCIDENT (2026-11-25), direct instruction - "SUBH has not
+      // replied to X... still unanswered 72074s later" kept alerting/
+      // growing for the SAME old message. clearReplyPending is only ever
+      // called from logInboxEvent - if the message was never actually
+      // processed at all (e.g. swallowed by an outage), that never
+      // happens, so this entry sat here forever: the 60s alert below IS
+      // already one-shot (gated by flaggedAt), but listReplyLatencyWatchdogItems
+      // keeps returning it, and the frontend card recomputes "still
+      // unanswered Ns" live on every view - not a repeated SEND, a stale
+      // card that never resolved. Same freshness rule as everywhere else
+      // (CATCHUP_STALE_THRESHOLD_MS, the 30-min no-auto-reply limit):
+      // past it, this becomes ONE terminal reminder and is cleared from
+      // the live watchdog set entirely - never re-alerted, never shown
+      // with a growing counter again.
+      if (now - entry.arrivedAt > CATCHUP_STALE_THRESHOLD_MS) {
+        await postOwnerNotification('⚠️ SUBH never replied to ' + (entry.name || chatId) + ' (' + chatId + ') - message from ' + formatIstDateTime(entry.arrivedAt) + ' was never processed (past the ' + Math.round(CATCHUP_STALE_THRESHOLD_MS / 60000) + '-minute auto-reply window) - please review and reply yourself.').catch(() => {});
+        try {
+          const reminderService = require('./reminderService');
+          await reminderService.saveReminder(reminderService.newReminder({
+            title: 'SUBH never replied: ' + (entry.name || chatId),
+            detail: 'Message from ' + formatIstDateTime(entry.arrivedAt) + ' was never processed',
+            dueAt: null, priority: 'high', source: 'whatsapp', sourceType: 'reply_watchdog_stale',
+            sourceRef: chatId, linkedChatId: chatId, now: new Date(now)
+          }));
+        } catch (err) { /* best effort */ }
+        await clearReplyPending(chatId);
+        continue;
+      }
       if (now - entry.arrivedAt < REPLY_WATCHDOG_THRESHOLD_MS) continue;
       if (entry.flaggedAt) continue; // already alerted once for this same overdue message
       entry.flaggedAt = now;
@@ -1619,7 +1654,7 @@ async function checkReplyLatencyWatchdog(now) {
 async function listReplyLatencyWatchdogItems() {
   const redis = getClient();
   if (!redis) return [];
-  const ids = (await redis.smembers(REPLY_PENDING_IDS_KEY).catch(() => [])) || [];
+  const ids = ((await redis.smembers(REPLY_PENDING_IDS_KEY).catch(() => [])) || []).map(String);
   const out = [];
   for (const chatId of ids) {
     try {

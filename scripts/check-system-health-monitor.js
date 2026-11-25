@@ -135,6 +135,15 @@ async function main() {
     whatsapp.listMessages = origListMessages; whatsappAssistant.listInboxLog = origListInboxLog;
     return result.ok === false && /no reply sent since/.test(result.error);
   });
+  await checkAsync('LIVE INCIDENT (2026-11-25), direct instruction - "Reply pipeline stuck: a message arrived 15 min ago (20:21): tell me which message and why" - the alert text now names the sender (phone, falling back from any resolved name) and a snippet of the actual stuck message, not just the generic age', async () => {
+    const now = Date.now();
+    whatsapp.listMessages = async () => [{ direction: 'incoming', recipient: '919999999999', created_at: new Date(now - 20 * 60 * 1000).toISOString(), content: 'Amar salary slip ta pathiye din please' }];
+    whatsappAssistant.listInboxLog = async () => [{ sentAt: now - 60 * 60 * 1000 }];
+    const monitor = freshMonitor();
+    const result = await monitor.checkReplyPipeline();
+    whatsapp.listMessages = origListMessages; whatsappAssistant.listInboxLog = origListInboxLog;
+    return result.ok === false && result.error.includes('919999999999') && result.error.includes('Amar salary slip ta pathiye din please');
+  });
   await checkAsync('an incoming message only 5 minutes old with no reply YET -> ok:true (too soon to call it stuck)', async () => {
     const now = Date.now();
     whatsapp.listMessages = async () => [{ direction: 'incoming', recipient: '919999999999', created_at: new Date(now - 5 * 60 * 1000).toISOString() }];
@@ -488,10 +497,35 @@ async function main() {
       await whatsappAssistant.recordSchedulerHeartbeat('test-commit');
       await whatsappAssistant.recordSendFlushHeartbeat();
       const recovered = await monitor.runHealthCheck();
-      await checkAsync('once everything passes again, runHealthCheck reports ok:true and clears the Action-needed slot', async () => {
-        const healthAlertAfterRecovery = await whatsappAssistant.getSystemHealthAlert();
-        return recovered.ok === true && healthAlertAfterRecovery === null;
+      await checkAsync('the FIRST healthy tick after a failure reports ok:true but does NOT yet clear the Action-needed slot (anti-flap: requires a couple of CONSECUTIVE healthy ticks, not just one)', async () => {
+        const healthAlertStillThere = await whatsappAssistant.getSystemHealthAlert();
+        return recovered.ok === true && Boolean(healthAlertStillThere);
       });
+      const recoveredAgain = await monitor.runHealthCheck();
+      await checkAsync('a SECOND consecutive healthy tick confirms the recovery and clears the Action-needed slot', async () => {
+        const healthAlertAfterRecovery = await whatsappAssistant.getSystemHealthAlert();
+        return recoveredAgain.ok === true && healthAlertAfterRecovery === null;
+      });
+
+      // HARDENING (2026-11-25, direct instruction) - "each problem once (KV
+      // debounce)": a FLAPPING metric (bad -> briefly healthy -> bad again,
+      // never reaching 2 CONSECUTIVE healthy ticks) must be treated as ONE
+      // ongoing incident, never re-alerted as if each flap were a brand new
+      // problem. Uses the gateway check as the lever here (not KV) - a
+      // clean, simple on/off mock, no interaction with the real-KV-vs-
+      // in-memory-fallback nuance exercised above.
+      whatsapp.getConnectionStatus = async () => ({ connected: false, status: 'disconnected' });
+      const freshBreak = await monitor.runHealthCheck();
+      await checkAsync('a genuinely NEW incident (after a confirmed recovery) IS re-alerted right away', async () =>
+        freshBreak.ok === false && freshBreak.alertSent === true && whatsappAlertCalls === 2 && emailAlertCalls === 2);
+      whatsapp.getConnectionStatus = async () => ({ connected: true, status: 'connected' });
+      const oneHealthyTick = await monitor.runHealthCheck();
+      await checkAsync('one lone healthy tick mid-incident does not yet count as recovered (consistent with the earlier recovery-confirm check)', async () =>
+        oneHealthyTick.ok === true && Boolean(await whatsappAssistant.getSystemHealthAlert()));
+      whatsapp.getConnectionStatus = async () => ({ connected: false, status: 'disconnected' });
+      const flapsBackBad = await monitor.runHealthCheck();
+      await checkAsync('LIVE INCIDENT (2026-11-25), direct instruction, ROOT CAUSE reproduced and fixed - flapping back to bad BEFORE the recovery was ever confirmed does NOT re-send the alert (still the SAME ongoing incident, never bypasses the 30-min re-alert interval) - the exact gap that let a borderline/noisy metric alert on every single flap', async () =>
+        flapsBackBad.ok === false && flapsBackBad.alertSent === false && whatsappAlertCalls === 2 && emailAlertCalls === 2);
     } finally {
       whatsapp.getConnectionStatus = origGetConnectionStatus;
       whatsapp.listMessages = origListMessages;

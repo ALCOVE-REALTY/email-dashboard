@@ -8971,6 +8971,43 @@ async function checkAsyncRealModel(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11-25), direct instruction - "SUBH has not replied to X... still unanswered 72074s later" kept growing forever for a message that was NEVER actually processed (e.g. swallowed by an outage) - clearReplyPending is only ever called from logInboxEvent, which never fires for a message with no outcome logged at all. Now applies the same 30-min freshness rule used everywhere else: past it, ONE terminal reminder + cleared from the live watchdog set, never shown again');
+  console.log('='.repeat(70));
+  await checkAsync('a reply-pending entry older than the 30-minute freshness limit is converted to ONE reminder and removed from the live watchdog set (the growing "still unanswered Ns" card disappears)', async () => {
+    const reminderService = require('../src/aiAssistant/reminderService');
+    const phone = '910000002425';
+    await whatsappAssistant.clearReplyPending(phone);
+    const arrivedAt = Date.now() - 31 * 60 * 1000; // 31 minutes ago - past the 30-minute freshness limit
+    await whatsappAssistant.markReplyPendingSince(phone, 'Stale Forever Test', arrivedAt);
+    await whatsappAssistant.checkReplyLatencyWatchdog(Date.now());
+    const card = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'reply_latency_watchdog' && i.chatId === whatsapp.normalizePhone(phone));
+    const reminders = (await reminderService.listRawReminders()).filter((r) => r.sourceRef === whatsapp.normalizePhone(phone) && r.sourceType === 'reply_watchdog_stale');
+    const notifAfter = await whatsappAssistant.listOwnerNotifications();
+    const posted = notifAfter.find((n) => n.text.includes('Stale Forever Test') && /never processed/.test(n.text));
+    return card === undefined && reminders.length === 1 && Boolean(posted);
+  });
+  await checkAsync('once converted to a reminder and cleared, a LATER watchdog tick never re-alerts or creates a second reminder for the same (now-gone) entry', async () => {
+    const reminderService = require('../src/aiAssistant/reminderService');
+    const phone = '910000002426';
+    await whatsappAssistant.clearReplyPending(phone);
+    const arrivedAt = Date.now() - 31 * 60 * 1000;
+    await whatsappAssistant.markReplyPendingSince(phone, 'No Repeat Stale Test', arrivedAt);
+    await whatsappAssistant.checkReplyLatencyWatchdog(Date.now());
+    await whatsappAssistant.checkReplyLatencyWatchdog(Date.now() + 60 * 1000); // a later tick - the entry is already gone, nothing to re-check
+    const reminders = (await reminderService.listRawReminders()).filter((r) => r.sourceRef === whatsapp.normalizePhone(phone) && r.sourceType === 'reply_watchdog_stale');
+    const notifCount = (await whatsappAssistant.listOwnerNotifications()).filter((n) => n.text.includes('No Repeat Stale Test')).length;
+    return reminders.length === 1 && notifCount === 1;
+  });
+  await checkAsync('an entry still within the 30-minute freshness limit but past the 60s watchdog threshold is flagged normally (the stale-conversion rule above never fires early)', async () => {
+    const phone = '910000002427';
+    await whatsappAssistant.clearReplyPending(phone);
+    await whatsappAssistant.markReplyPendingSince(phone, 'Normal Watchdog Not Stale Test', Date.now() - 65000);
+    await whatsappAssistant.checkReplyLatencyWatchdog(Date.now());
+    const card = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'reply_latency_watchdog' && i.chatId === whatsapp.normalizePhone(phone));
+    return Boolean(card);
+  });
+
+  console.log('='.repeat(70));
   console.log('Task 3 archiving (2026-10-31): wa-inbox-log entries are archived to Google Drive before they are ever trimmed, never silently deleted at the retention cap');
   console.log('='.repeat(70));
   // Shared by the 3 tests below. The fake Upstash server only implements

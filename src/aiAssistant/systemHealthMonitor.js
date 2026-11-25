@@ -410,6 +410,8 @@ async function checkReplyPipeline() {
     const ageMs = Date.now() - lastIncomingAt;
     let stuck = ageMs >= STUCK_REPLY_THRESHOLD_MS && lastReplyAt < lastIncomingAt;
     let excludedReason = null;
+    let stuckPhoneForError = null;
+    let stuckTextForError = null;
     if (stuck) {
       // Spec: "messages I replied to manually" - a manual send from the
       // owner's own phone shows up in this SAME gateway feed as an
@@ -419,6 +421,8 @@ async function checkReplyPipeline() {
       // ever write to.
       const stuckMessage = incoming.find((m) => (m.created_at ? new Date(m.created_at).getTime() : 0) === lastIncomingAt);
       const stuckPhone = stuckMessage ? stuckMessage.recipient : null;
+      stuckPhoneForError = stuckPhone;
+      stuckTextForError = stuckMessage ? String(stuckMessage.content || '').slice(0, 80) : null;
       const hasManualReplyAfter = stuckPhone && feed.some((m) => m.direction === 'outgoing' && whatsapp.normalizePhone(m.recipient) === whatsapp.normalizePhone(stuckPhone) && (m.created_at ? new Date(m.created_at).getTime() : 0) > lastIncomingAt);
       if (hasManualReplyAfter) {
         stuck = false;
@@ -440,9 +444,18 @@ async function checkReplyPipeline() {
         }
       }
     }
+    // LIVE INCIDENT (2026-11-25), direct instruction - "'Reply pipeline
+    // stuck: a message arrived 15 min ago' (20:21): tell me which message
+    // and why." The sender/text were already computed above (needed for
+    // the exclusion checks) but never surfaced in the alert text itself.
+    let stuckWho = null;
+    if (stuck && stuckPhoneForError) {
+      const resolvedName = await whatsappAssistant.resolveSenderName(stuckPhoneForError).catch(() => null);
+      stuckWho = (resolvedName || stuckPhoneForError) + (stuckTextForError ? (': "' + stuckTextForError + '"') : '');
+    }
     return {
       ok: !stuck,
-      error: stuck ? ('a message arrived ' + Math.round(ageMs / 60000) + ' min ago and still has no reply sent since') : null,
+      error: stuck ? ('a message arrived ' + Math.round(ageMs / 60000) + ' min ago and still has no reply sent since' + (stuckWho ? (' - ' + stuckWho) : '')) : null,
       excludedReason: excludedReason || undefined,
       lastIncomingAt, lastReplyAt: lastReplyAt || null
     };
@@ -628,21 +641,23 @@ const HEALTH_ALERT_DEBOUNCE_KEY = 'wa-health-alert-debounce-state';
 // resets any in-memory value but never the KV one).
 let lastAlertSentAtMemory = 0;
 let wasFailingLastTickMemory = false;
+let consecutiveHealthyTicksMemory = 0;
 async function getAlertDebounceState() {
   const redis = getRawRedisClient();
-  if (!redis) return { lastAlertSentAt: lastAlertSentAtMemory, wasFailingLastTick: wasFailingLastTickMemory };
+  if (!redis) return { lastAlertSentAt: lastAlertSentAtMemory, wasFailingLastTick: wasFailingLastTickMemory, consecutiveHealthyTicks: consecutiveHealthyTicksMemory };
   try {
     const raw = await redis.get(HEALTH_ALERT_DEBOUNCE_KEY);
-    if (!raw) return { lastAlertSentAt: 0, wasFailingLastTick: false };
+    if (!raw) return { lastAlertSentAt: 0, wasFailingLastTick: false, consecutiveHealthyTicks: 0 };
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    return { lastAlertSentAt: Number(parsed.lastAlertSentAt) || 0, wasFailingLastTick: Boolean(parsed.wasFailingLastTick) };
+    return { lastAlertSentAt: Number(parsed.lastAlertSentAt) || 0, wasFailingLastTick: Boolean(parsed.wasFailingLastTick), consecutiveHealthyTicks: Number(parsed.consecutiveHealthyTicks) || 0 };
   } catch (err) {
-    return { lastAlertSentAt: lastAlertSentAtMemory, wasFailingLastTick: wasFailingLastTickMemory };
+    return { lastAlertSentAt: lastAlertSentAtMemory, wasFailingLastTick: wasFailingLastTickMemory, consecutiveHealthyTicks: consecutiveHealthyTicksMemory };
   }
 }
 async function setAlertDebounceState(state) {
   lastAlertSentAtMemory = state.lastAlertSentAt;
   wasFailingLastTickMemory = state.wasFailingLastTick;
+  consecutiveHealthyTicksMemory = state.consecutiveHealthyTicks || 0;
   const redis = getRawRedisClient();
   if (!redis) return;
   try { await redis.set(HEALTH_ALERT_DEBOUNCE_KEY, JSON.stringify(state)); } catch (err) { /* best effort */ }
@@ -669,6 +684,28 @@ async function runHealthCheck() {
   const now = Date.now();
   const debounce = await getAlertDebounceState();
 
+  // HARDENING (2026-11-25, direct instruction) - "Alerts only for real,
+  // persistent problems; each problem once (KV debounce)." ROOT CAUSE: a
+  // borderline/noisy metric (KV p95 sitting right at its threshold is the
+  // reported example) can flap ok/bad from one 2-minute tick to the next;
+  // the old logic cleared wasFailingLastTick the INSTANT a single tick
+  // came back healthy, so the very next bad tick read !wasFailingLastTick
+  // as true and re-sent immediately - completely bypassing
+  // RE_ALERT_INTERVAL_MS. Requiring RECOVERY_CONFIRM_TICKS CONSECUTIVE
+  // healthy ticks before actually clearing the alert/resetting
+  // wasFailingLastTick (same "require several in a row" discipline this
+  // file already uses for the gateway session check) means a flapping
+  // metric is correctly treated as ONE ongoing problem, not a repeating
+  // series of new ones - a genuine, sustained recovery still clears
+  // normally, just a couple of ticks later.
+  const RECOVERY_CONFIRM_TICKS = 2;
+  if (isFailing) {
+    debounce.consecutiveHealthyTicks = 0;
+  } else {
+    debounce.consecutiveHealthyTicks = (debounce.consecutiveHealthyTicks || 0) + 1;
+  }
+  const trulyRecovered = !isFailing && debounce.consecutiveHealthyTicks >= RECOVERY_CONFIRM_TICKS;
+
   if (isFailing) {
     // Best-effort - may itself fail to write if KV specifically is the
     // problem, which is fine: the alert below is the channel that
@@ -677,7 +714,7 @@ async function runHealthCheck() {
       const whatsappAssistant = require('./whatsappAssistant');
       await withTimeout(whatsappAssistant.setSystemHealthAlert({ failures }), HEALTH_CHECK_TIMEOUT_MS);
     } catch (err) { /* best effort */ }
-  } else if (debounce.wasFailingLastTick) {
+  } else if (trulyRecovered && debounce.wasFailingLastTick) {
     try {
       const whatsappAssistant = require('./whatsappAssistant');
       await withTimeout(whatsappAssistant.clearSystemHealthAlert(), HEALTH_CHECK_TIMEOUT_MS);
@@ -690,7 +727,13 @@ async function runHealthCheck() {
     debounce.lastAlertSentAt = now;
     alertSent = true;
   }
-  debounce.wasFailingLastTick = isFailing;
+  // wasFailingLastTick only ever flips back to false once TRULY
+  // recovered (not on every lone healthy tick) - a mid-recovery tick
+  // (healthy, but not yet past RECOVERY_CONFIRM_TICKS) deliberately
+  // leaves it at its PRIOR value, so a flapping metric never re-earns
+  // "this looks like a brand new incident" status mid-flap.
+  if (isFailing) debounce.wasFailingLastTick = true;
+  else if (trulyRecovered) debounce.wasFailingLastTick = false;
   await setAlertDebounceState(debounce);
 
   return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, sendFlushHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, gatewayV1Session, alertSent };
