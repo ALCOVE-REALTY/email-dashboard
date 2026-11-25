@@ -192,6 +192,56 @@ async function main() {
   }
 
   console.log('='.repeat(70));
+  console.log('HARDENING (2026-11-25, direct instruction), point 2 (unified send queue) - already fully satisfied by this facade: the OLD client gates every real send through one shared enqueueSend/sendQueueTail promise chain (whatsappService.js), the NEW gateway gates every real send through one shared waitForSendSlot() (whatsappGatewayV1.js), and direct inspection of every require(\'whatsappService\'|\'whatsappGatewayV1\') call site in src/ confirms none of them call a send method directly - this is a regression guard, not a fix, so it stays true going forward');
+  console.log('='.repeat(70));
+  check('no file under src/ (other than the facade\'s own implementation files) calls a raw send method directly on whatsappService.js or whatsappGatewayV1.js, bypassing the one shared facade/queue', (() => {
+    const fs = require('fs');
+    const path = require('path');
+    const SRC_DIR = path.join(__dirname, '..', 'src');
+    // The only 3 files allowed to call these methods directly - they ARE
+    // the implementation (whatsappGatewayFacade.js calls through to
+    // whichever of the other two is active; those two define the methods).
+    const SKIP_BASENAMES = new Set(['whatsappService.js', 'whatsappGatewayV1.js', 'whatsappGatewayFacade.js']);
+    const RAW_SEND_METHODS = {
+      whatsappService: ['sendWhatsAppMessage', 'sendWhatsAppDocument', 'sendPresence'],
+      whatsappGatewayV1: ['sendText', 'sendTextOnce', 'sendDocument', 'sendDocumentOnce']
+    };
+    // Pragmatic source scan (not a real JS parser) - strips comments first
+    // so a comment merely MENTIONING one of these calls (there is at least
+    // one in this codebase, in whatsappAssistant.js) never false-positives.
+    function stripComments(code) {
+      return code.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((line) => {
+        const idx = line.indexOf('//');
+        return idx === -1 ? line : line.slice(0, idx);
+      }).join('\n');
+    }
+    const offenders = [];
+    function walk(dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!entry.name.endsWith('.js') || SKIP_BASENAMES.has(entry.name)) continue;
+        const stripped = stripComments(fs.readFileSync(full, 'utf8'));
+        const requireRe = /(?:const|let|var)\s+(\w+)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)/g;
+        let m;
+        while ((m = requireRe.exec(stripped))) {
+          const varName = m[1];
+          const base = path.basename(m[2]);
+          const methods = RAW_SEND_METHODS[base];
+          if (!methods) continue;
+          for (const method of methods) {
+            const callRe = new RegExp('\\b' + varName + '\\.' + method + '\\s*\\(');
+            if (callRe.test(stripped)) offenders.push(path.relative(SRC_DIR, full) + ' -> ' + varName + '.' + method + '()');
+          }
+        }
+      }
+    }
+    walk(SRC_DIR);
+    if (offenders.length) console.log('    BYPASS(ES) FOUND: ' + offenders.join(', '));
+    return offenders.length === 0;
+  })());
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed');
   if (fail) { console.log('Failed checks:'); failures.forEach((f) => console.log(' - ' + f)); }
   console.log('='.repeat(70));
