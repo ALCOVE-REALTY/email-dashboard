@@ -317,16 +317,21 @@ function siteDisplayLabel(resolvedValue, originalHint) {
   if (hint && tail.toLowerCase().includes(hint.toLowerCase())) return tail;
   return hint ? (tail + ' (' + hint + ')') : tail;
 }
-function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLocations, companyHint, departmentHint }) {
+// HR reports fix 5/5 (2026-11-24), direct instruction - captions/
+// filenames use the real, full display name (e.g. "Alcove Developers
+// LLP") for a company target, never the raw short code/hint (e.g.
+// "ADLLP") - reverses the earlier Phase 2 decision from this same
+// session, per direct instruction. resolveCompanyFilter already resolves
+// a code to the real company name (and falls back to the raw hint only
+// when nothing could be resolved at all), so resolvedCompany is always
+// the right value to use here - no new lookup needed.
+function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLocations, companyHint, resolvedCompany, departmentHint }) {
   if (locationHint) {
     const resolved = (resolvedLocations && resolvedLocations.length) ? resolvedLocations[0]
       : ((resolvedCompanyLocations && resolvedCompanyLocations.length) ? resolvedCompanyLocations[0] : null);
     return siteDisplayLabel(resolved, locationHint);
   }
-  // Company/department labels keep the sender's own short hint/code
-  // verbatim (e.g. "ADLLP") rather than the full resolved legal name -
-  // that's the whole point of a company code, and matches the sender's
-  // own updated Example 5 filename exactly.
+  if (resolvedCompany) return String(resolvedCompany).trim();
   if (companyHint) return String(companyHint).trim();
   if (departmentHint) return String(departmentHint).trim();
   return null;
@@ -339,6 +344,7 @@ async function resolveOneTargetFromFilters(filters, employees) {
     resolvedLocations: resolvedFilters.resolvedLocations,
     resolvedCompanyLocations: resolvedFilters.resolvedCompanyLocations,
     companyHint: filters.company,
+    resolvedCompany: resolvedFilters.resolvedCompany,
     departmentHint: filters.department
   });
   return { locationHint: filters.location, filters, candidates, label, statusLabel: titleCaseStatus(filters.status) };

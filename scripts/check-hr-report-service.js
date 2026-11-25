@@ -589,6 +589,40 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('HR reports fix 5/5 (2026-11-24), direct instruction - captions/filenames use the real, full company display name, never the raw short code');
+  console.log('='.repeat(70));
+  await checkAsync('a company target resolved via its code gets the FULL legal name as its label (used for both filename and caption) - reverses the earlier Phase 2 decision to keep the raw code', async () => {
+    const origListCompanyDetails = companyDetailsService.listCompanyDetails;
+    companyDetailsService.listCompanyDetails = async () => [{ company: 'Alcove Developers LLP', code: 'ADLLP' }];
+    try {
+      const result = await hrReportService.handleHrReportRequest({
+        phone: '919000000060', name: 'Someone', lang: 'english', text: 'ADLLP staff list, Name, Designation', history: [],
+        senderEmployee: null, employees: FAKE_EMPLOYEES,
+        deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', company: 'ADLLP', columns: ['Name', 'Designation'], language: 'english' }) }
+      });
+      const label = result && result.pendingDocuments && result.pendingDocuments.targets[0].label;
+      return label === 'Alcove Developers LLP';
+    } finally { companyDetailsService.listCompanyDetails = origListCompanyDetails; }
+  });
+  await checkAsync('a company hint that does NOT resolve to any real company (no code/name match at all) still falls back to the raw hint as the label - never blank, never throws', async () => {
+    const origListCompanyDetails = companyDetailsService.listCompanyDetails;
+    companyDetailsService.listCompanyDetails = async () => [{ company: 'Alcove Developers LLP', code: 'ADLLP' }];
+    try {
+      const result = await hrReportService.handleHrReportRequest({
+        phone: '919000000061', name: 'Someone', lang: 'english', text: 'XYZ-Co staff list, Name', history: [],
+        senderEmployee: null, employees: FAKE_EMPLOYEES,
+        deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', company: 'XYZ-Co', columns: ['Name'], language: 'english' }) }
+      });
+      return result && result.case === 'hr_report' && /no employees matched/i.test(result.replyText || '');
+    } finally { companyDetailsService.listCompanyDetails = origListCompanyDetails; }
+  });
+  check('the PDF\'s own "HR Report" fallback title and its layout are completely untouched by this fix - only the resolved label VALUE changed, never the fallback literal or the renderer itself', (() => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/hrReportService.js'), 'utf8');
+    return /const title = target\.label \|\| 'HR Report';/.test(src);
+  })());
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed');
   if (fail) { console.log('Failed checks:'); failures.forEach((f) => console.log(' - ' + f)); }
   console.log('='.repeat(70));
