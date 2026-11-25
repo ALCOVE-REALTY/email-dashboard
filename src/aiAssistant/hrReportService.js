@@ -42,9 +42,42 @@ function getClient() {
 // Keys match dataAccessService.js's own HEAD_DEFINITIONS exactly (no
 // translation layer needed for a tier lookup). `label` is the English
 // document-header wording Phase 2 uses.
+function confirmationDateRaw(emp) {
+  return emp.doj ? workforceAnalytics.probationCompletionDate(emp.doj) : null;
+}
 function confirmationDateValue(emp) {
-  const d = workforceAnalytics.probationCompletionDate(emp.doj);
+  const d = confirmationDateRaw(emp);
   return d ? d.toDateString() : null;
+}
+// HR reports fix 2/5 (2026-11-24), direct instruction - derived report
+// fields. CODE computes every value (never the model) - the same
+// "model understands, code fills" discipline every other field here
+// already follows. 58 is this company's own established retirement age
+// (already used elsewhere in workforceAnalytics.js - turning58ThisMonth/
+// AGE_BUCKETS's own comment confirms it's not an arbitrary number) - used
+// as the only supported retirement age for now; a per-request override
+// would need threading retirement age through every getValue call, which
+// no real example here actually needs yet.
+const RETIREMENT_AGE_DEFAULT = 58;
+function ageValue(emp) {
+  return emp.dob ? workforceAnalytics.calcAge(emp.dob, new Date()) : null;
+}
+// calcAge is really "whole years elapsed since X, as of now" - equally
+// correct for DOJ (years of service) as it already is for DOB (age).
+function yearsOfServiceValue(emp) {
+  return emp.doj ? workforceAnalytics.calcAge(emp.doj, new Date()) : null;
+}
+function retirementDateRaw(emp) {
+  if (!emp.dob) return null;
+  return new Date(Date.UTC(emp.dob.getUTCFullYear() + RETIREMENT_AGE_DEFAULT, emp.dob.getUTCMonth(), emp.dob.getUTCDate()));
+}
+function retirementDateValue(emp) {
+  const d = retirementDateRaw(emp);
+  return d ? d.toDateString() : null;
+}
+const BIRTHDAY_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function birthdayMonthValue(emp) {
+  return emp.dob ? BIRTHDAY_MONTH_NAMES[emp.dob.getUTCMonth()] : null;
 }
 const COLUMN_CATALOG = [
   { key: 'employeeId', label: 'Emp Code', aliases: ['emp code', 'employee code', 'emp id', 'employee id', 'code'], getValue: (e) => e.employeeId },
@@ -58,8 +91,9 @@ const COLUMN_CATALOG = [
   { key: 'company', label: 'Company', aliases: ['company'], getValue: (e) => e.company },
   { key: 'status', label: 'Status', aliases: ['status'], getValue: (e) => e.status },
   { key: 'employmentType', label: 'Employment Type', aliases: ['employment type', 'emp type'], getValue: (e) => e.employmentType },
-  { key: 'doj', label: 'DOJ', aliases: ['doj', 'date of joining', 'joining date'], getValue: (e) => (e.doj ? e.doj.toDateString() : null) },
-  { key: 'confirmationDate', label: 'Confirmation Date', aliases: ['confirmation date', 'confirmation'], getValue: confirmationDateValue },
+  { key: 'doj', label: 'DOJ', aliases: ['doj', 'date of joining', 'joining date'], getValue: (e) => (e.doj ? e.doj.toDateString() : null), sortValue: (e) => e.doj || null },
+  { key: 'confirmationDate', label: 'Confirmation Date', aliases: ['confirmation date', 'confirmation', 'probation end', 'probation end date'], getValue: confirmationDateValue, sortValue: confirmationDateRaw },
+  { key: 'yearsOfService', label: 'Years of Service', aliases: ['years of service', 'service years', 'tenure years'], getValue: yearsOfServiceValue },
   { key: 'tenure', label: 'Tenure', aliases: ['tenure'], getValue: (e) => e.tenure },
   { key: 'totalExperience', label: 'Total Experience', aliases: ['total experience', 'experience'], getValue: (e) => e.totalExperience },
   { key: 'reportingManager', label: 'HOD', aliases: ['hod', 'reporting manager'], getValue: (e) => e.reportingManager },
@@ -68,7 +102,10 @@ const COLUMN_CATALOG = [
   // personal
   { key: 'contactNumber', label: 'Contact No', aliases: ['contact', 'contact no', 'contact number', 'phone', 'mobile'], getValue: (e) => e.contactNumber },
   { key: 'emailPersonal', label: 'Personal Email', aliases: ['personal email'], getValue: (e) => e.emailPersonal },
-  { key: 'dob', label: 'DOB', aliases: ['dob', 'date of birth'], getValue: (e) => (e.dob ? e.dob.toDateString() : null) },
+  { key: 'dob', label: 'DOB', aliases: ['dob', 'date of birth'], getValue: (e) => (e.dob ? e.dob.toDateString() : null), sortValue: (e) => e.dob || null },
+  { key: 'age', label: 'Age', aliases: ['age'], getValue: ageValue },
+  { key: 'retirementDate', label: 'Retirement Date', aliases: ['retirement date', 'retirement'], getValue: retirementDateValue, sortValue: retirementDateRaw },
+  { key: 'birthdayMonth', label: 'Birthday Month', aliases: ['birthday month', 'birth month'], getValue: birthdayMonthValue },
   { key: 'bloodGroup', label: 'Blood Group', aliases: ['blood group'], getValue: (e) => e.bloodGroup },
   { key: 'permanentAddress', label: 'Permanent Address', aliases: ['permanent address'], getValue: (e) => e.permanentAddress },
   { key: 'presentAddress', label: 'Present Address', aliases: ['present address'], getValue: (e) => e.presentAddress },
@@ -275,6 +312,23 @@ function filterEmployeesForReport(employees, query) {
       if (e.doj.getMonth() + 1 !== Number(query.dojMonth)) return false;
       if (query.dojYear && e.doj.getFullYear() !== Number(query.dojYear)) return false;
     }
+    // HR reports fix 2/5 (2026-11-24), direct instruction - derived-field
+    // filters, INCLUSIVE bounds (already resolved by the model from the
+    // sender's own wording - see hrReportRequestTool's own description).
+    // Live incident this fixes: "58 age er uporer staff list" used to
+    // match ALL 463 active staff (no such filter concept existed at all).
+    if (query.ageFilter) {
+      const age = ageValue(e);
+      if (age === null) return false;
+      if (Number.isFinite(query.ageFilter.min) && age < query.ageFilter.min) return false;
+      if (Number.isFinite(query.ageFilter.max) && age > query.ageFilter.max) return false;
+    }
+    if (query.yearsOfServiceFilter) {
+      const yos = yearsOfServiceValue(e);
+      if (yos === null) return false;
+      if (Number.isFinite(query.yearsOfServiceFilter.min) && yos < query.yearsOfServiceFilter.min) return false;
+      if (Number.isFinite(query.yearsOfServiceFilter.max) && yos > query.yearsOfServiceFilter.max) return false;
+    }
     return true;
   });
 }
@@ -374,7 +428,33 @@ function hrReportRequestTool() {
           columns: { type: 'array', items: { type: 'string' }, description: 'The exact column names the sender asked for, in the order they said them (e.g. ["Emp Code","Name","DOJ"]). A single-element array ["all"] or ["sob"] if the sender said they want every column. Omit entirely (empty array) if the sender did not say which columns at all - code will then ask.' },
           format: { type: 'string', enum: ['pdf', 'excel'], description: '"excel" only if the sender explicitly asked for Excel/xlsx (e.g. "excel-e dao") - omit otherwise (code defaults to PDF).' },
           groupBy: { type: 'array', items: { type: 'string' }, description: 'Column names to group/break the report BY, in nesting order, outermost first (e.g. ["Reporting DOER","HOD"] for "Doer-wise & HOD-wise report"). Omit entirely (empty array) for a normal flat report - most requests have no grouping at all.' },
+          // HR reports fix 2/5 (2026-11-24), direct instruction - derived-
+          // field filters. min/max are INCLUSIVE bounds you must resolve
+          // yourself from the sender's own wording (never leave this to
+          // code): "58 age er upor"/"58+" means strictly OVER 58, so
+          // min=59; "50 theke upore" ("50 and above") means min=50;
+          // "5 bochhorer beshi service" (more than 5 years) means min=6.
+          // Omit min/max you can't determine; omit the whole object if no
+          // age/service filter was mentioned at all.
+          ageFilter: { type: 'object', properties: { min: { type: 'integer' }, max: { type: 'integer' } }, description: 'Age filter, INCLUSIVE bounds already resolved from the sender\'s wording (e.g. "58+"/"58 age er upor" -> {min:59}). Omit entirely if no age filter was mentioned.' },
+          yearsOfServiceFilter: { type: 'object', properties: { min: { type: 'integer' }, max: { type: 'integer' } }, description: 'Years-of-service filter, INCLUSIVE bounds already resolved from the sender\'s wording (e.g. "5 bochhorer beshi" -> {min:6}). Omit entirely if no service-length filter was mentioned.' },
           resendLastAsFormat: { type: 'string', enum: ['pdf', 'excel'], description: 'Set ONLY when the sender is asking to resend/convert the report(s) JUST sent in this conversation into a different file format (e.g. "Ei duto Excel e din", "PDF te abar dao") - never for a brand-new report request. Omit for anything else.' },
+          // HR reports fix 2/5 (2026-11-24), direct instruction -
+          // conversational report editing ("sobar Age column add korun",
+          // "Doer column baad din", "DOJ onujayi sort korun"). Set ONLY
+          // when the sender is clearly modifying/resending the report(s)
+          // JUST sent in this conversation, never for a brand-new report -
+          // include only the fields that actually changed.
+          editLastReport: {
+            type: 'object',
+            description: 'Set ONLY when the sender is asking to modify/resend the report(s) just sent in this conversation (add/remove a column, sort it, etc.) - never for a brand-new report request. Omit entirely for a new request.',
+            properties: {
+              addColumns: { type: 'array', items: { type: 'string' }, description: 'Column names to ADD to the existing report (e.g. ["Age"]). Omit if none.' },
+              removeColumns: { type: 'array', items: { type: 'string' }, description: 'Column names to REMOVE from the existing report (e.g. ["Reporting DOER"]). Omit if none.' },
+              sortColumn: { type: 'string', description: 'Column name to sort the existing report by (e.g. "DOJ"). Omit if no sort was requested.' },
+              sortDirection: { type: 'string', enum: ['asc', 'desc'], description: 'Sort direction if the sender said so (e.g. "newest first" -> desc for a date column). Omit to leave it as ascending.' }
+            }
+          },
           language: { type: 'string', enum: ['english', 'banglish', 'hinglish'], description: 'The language/script of THIS message, for replying in the same language/script.' }
         },
         required: ['matchesReportIntent']
@@ -753,8 +833,11 @@ async function sendApprovedReport(approval) {
   const spec = approval.pendingReportRender;
   const employeeService = require('../employeeService');
   const { employees } = await employeeService.getEmployeeData();
-  const targets = [];
+  let targets = [];
   for (const filters of spec.targetsFilters) targets.push(await resolveOneTargetFromFilters(filters, employees));
+  if (spec.sortColumnKey) {
+    targets = targets.map((t) => ({ ...t, candidates: sortCandidates(t.candidates, spec.sortColumnKey, spec.sortDirection) }));
+  }
   const includedColumns = spec.columnKeys.map((k) => COLUMN_BY_KEY.get(k)).filter(Boolean);
   const totalCandidates = targets.reduce((s, t) => s + t.candidates.length, 0);
   if (totalCandidates === 0) {
@@ -804,12 +887,44 @@ async function handleHrReportRequest({ phone, name, lang, text, history, senderE
   }
   const extracted = await extract(text, history).catch(() => null);
   if (!extracted || !extracted.matchesReportIntent) return null;
-  if (extracted.resendLastAsFormat) {
+  // HR reports fix 2/5 (2026-11-24), direct instruction - "Follow-ups edit
+  // the SAME report and resend it ... Keep the sender's current report
+  // spec for a while so follow-ups apply to it." `resendLastAsFormat`
+  // (Phase 2, already shipped) and `editLastReport` (new) are both just
+  // "load the last spec, apply a delta, re-finalize" - never replacing
+  // each other, so neither's already-tested behavior regresses.
+  if (extracted.resendLastAsFormat || extracted.editLastReport) {
     const last = await getLastReportSelection(phone);
     if (last) {
       const targets = [];
       for (const filters of last.targetsFilters) targets.push(await resolveOneTargetFromFilters(filters, employees));
-      return finalizeReports({ phone, name, lang: extracted.language || last.lang || lang, columnKeys: last.columnKeys, format: extracted.resendLastAsFormat, groupKeys: last.groupKeys || [], targets, senderEmployee });
+      let columnKeys = last.columnKeys.slice();
+      let sortColumnKey = last.sortColumnKey || null;
+      let sortDirection = last.sortDirection || null;
+      const edit = extracted.editLastReport;
+      if (edit) {
+        if (Array.isArray(edit.removeColumns) && edit.removeColumns.length) {
+          const removeKeys = new Set(edit.removeColumns.map((alias) => findColumnByAlias(alias)).filter(Boolean).map((c) => c.key));
+          columnKeys = columnKeys.filter((k) => !removeKeys.has(k));
+        }
+        if (Array.isArray(edit.addColumns) && edit.addColumns.length) {
+          for (const alias of edit.addColumns) {
+            const col = findColumnByAlias(alias);
+            if (col && !columnKeys.includes(col.key)) columnKeys.push(col.key);
+          }
+        }
+        if (edit.sortColumn) {
+          const col = findColumnByAlias(edit.sortColumn);
+          if (col) sortColumnKey = col.key;
+        }
+        if (edit.sortDirection === 'asc' || edit.sortDirection === 'desc') sortDirection = edit.sortDirection;
+      }
+      return finalizeReports({
+        phone, name, lang: extracted.language || last.lang || lang,
+        columnKeys, format: extracted.resendLastAsFormat || last.format,
+        groupKeys: last.groupKeys || [], filterOnlyPersonalKeys: last.filterOnlyPersonalKeys || [],
+        sortColumnKey, sortDirection, targets, senderEmployee
+      });
     }
     // No memory found (TTL expired, or nothing was ever sent this
     // session) - falls through to a normal fresh request below, using
@@ -827,8 +942,19 @@ async function beginReportRequest({ phone, name, lang, text, extracted, senderEm
     employmentType: extracted.employmentType || null,
     groupD: extracted.collarType || null,
     dojMonth: extracted.dojMonth || null,
-    dojYear: extracted.dojYear || null
+    dojYear: extracted.dojYear || null,
+    ageFilter: extracted.ageFilter || null,
+    yearsOfServiceFilter: extracted.yearsOfServiceFilter || null
   };
+  // HR reports fix 2/5 (2026-11-24), direct instruction - "a filter on a
+  // Personal derived field counts as using it" - a filter-only field
+  // (not also requested as a rendered column) still needs to count
+  // toward the approval decision below, so a sender can never learn
+  // someone else's age merely by binary-searching with filters instead
+  // of asking for the column outright.
+  const filterOnlyPersonalKeys = [];
+  if (extracted.ageFilter) filterOnlyPersonalKeys.push('age');
+  if (extracted.yearsOfServiceFilter) filterOnlyPersonalKeys.push('yearsOfService');
   // LIVE INCIDENT (2026-11-24) - one target per distinct location hint
   // (never one combined/broken filter set); no location hint at all means
   // exactly one target with no location filter.
@@ -862,10 +988,10 @@ async function beginReportRequest({ phone, name, lang, text, extracted, senderEm
 
   const { keys: columnKeys, wantsAll } = resolveModelColumns(extracted.columns);
   if (!columnKeys && !wantsAll) {
-    await savePendingColumnQuestion(phone, { targetsFilters: targets.map((t) => t.filters), format, groupKeys, lang });
+    await savePendingColumnQuestion(phone, { targetsFilters: targets.map((t) => t.filters), format, groupKeys, filterOnlyPersonalKeys, lang });
     return { case: 'hr_report', replyText: buildColumnQuestionText(lang), summaryForOwner: text.slice(0, 160), lang };
   }
-  return finalizeReports({ phone, name, lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format, groupKeys, targets, senderEmployee });
+  return finalizeReports({ phone, name, lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format, groupKeys, filterOnlyPersonalKeys, targets, senderEmployee });
 }
 
 async function continueWithColumnAnswer({ phone, name, lang, text, pending, senderEmployee, employees }) {
@@ -879,11 +1005,41 @@ async function continueWithColumnAnswer({ phone, name, lang, text, pending, send
   await clearPendingColumnQuestion(phone);
   const targets = [];
   for (const filters of pending.targetsFilters) targets.push(await resolveOneTargetFromFilters(filters, employees));
-  return finalizeReports({ phone, name, lang: pending.lang || lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format: pending.format, groupKeys: pending.groupKeys || [], targets, senderEmployee });
+  return finalizeReports({ phone, name, lang: pending.lang || lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format: pending.format, groupKeys: pending.groupKeys || [], filterOnlyPersonalKeys: pending.filterOnlyPersonalKeys || [], targets, senderEmployee });
 }
 
-async function finalizeReports({ phone, name, lang, columnKeys, format, groupKeys, targets, senderEmployee }) {
+// Pure - sorts a candidate list by one column's own RAW value (never its
+// display string - e.g. DOJ must sort chronologically, not
+// alphabetically by "Mon Jan 01 2024"-style text). `sortValue` is a
+// per-column override for exactly this (doj/dob/confirmationDate/
+// retirementDate); every other column falls back to its own getValue().
+// Stable: ties and missing values sort to the end, regardless of direction.
+function sortCandidates(candidates, sortColumnKey, sortDirection) {
+  if (!sortColumnKey) return candidates;
+  const col = COLUMN_BY_KEY.get(sortColumnKey);
+  if (!col) return candidates;
+  const valueOf = col.sortValue || col.getValue;
+  const dir = sortDirection === 'desc' ? -1 : 1;
+  return candidates.slice().sort((a, b) => {
+    const va = valueOf(a);
+    const vb = valueOf(b);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (va instanceof Date && vb instanceof Date) return (va.getTime() - vb.getTime()) * dir;
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+    return String(va).localeCompare(String(vb)) * dir;
+  });
+}
+async function finalizeReports({ phone, name, lang, columnKeys, format, groupKeys, filterOnlyPersonalKeys, sortColumnKey, sortDirection, targets, senderEmployee }) {
   const { includedColumns, excludedRestrictedLabels, tierMap } = await classifyColumnsForAccess(columnKeys);
+  // HR reports fix 2/5 (2026-11-24) - sort is a render-order concern
+  // resolved ONCE here, before anything downstream (preview text, saved
+  // selection, pending-approval render, sent documents) sees the
+  // candidates, so none of that code needs to know sorting exists.
+  if (sortColumnKey) {
+    targets = targets.map((t) => ({ ...t, candidates: sortCandidates(t.candidates, sortColumnKey, sortDirection) }));
+  }
   const totalCandidates = targets.reduce((s, t) => s + t.candidates.length, 0);
   // LIVE INCIDENT (2026-11-24) - "Report ready (0 rows)" used to look like
   // a (silently broken) success; now an honest, actionable message, and
@@ -900,7 +1056,12 @@ async function finalizeReports({ phone, name, lang, columnKeys, format, groupKey
   // targets) keeps the EXISTING rule: personal columns about others need
   // approval.
   const hasPersonalColumn = includedColumns.some((c) => (tierMap[c.key] || 'personal') === 'personal');
-  const needsApproval = hasPersonalColumn && !isSingleSelfTarget;
+  // HR reports fix 2/5 (2026-11-24), direct instruction - "A filter on a
+  // Personal derived field (e.g. '58+') counts as using it": a sender
+  // can't dodge the approval gate by filtering on Age without also
+  // rendering it as a column.
+  const hasPersonalFilterOnly = (filterOnlyPersonalKeys || []).some((k) => (tierMap[k] || 'personal') === 'personal');
+  const needsApproval = (hasPersonalColumn || hasPersonalFilterOnly) && !isSingleSelfTarget;
 
   if (needsApproval) {
     const wa = getWhatsappAssistant();
@@ -909,12 +1070,18 @@ async function finalizeReports({ phone, name, lang, columnKeys, format, groupKey
       phone, name, requestText: 'HR report (' + totalCandidates + ' rows)',
       dataRequestSummary: 'HR report - ' + targets.map((t) => (t.label ? t.label + ': ' : '') + t.candidates.length).join(' · '),
       lang, preparedReplyText: previewText, preparedCard: null, preparedError: null,
-      pendingReportRender: { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), format, groupKeys }
+      pendingReportRender: { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), format, groupKeys, sortColumnKey: sortColumnKey || null, sortDirection: sortDirection || null }
     });
+    // HR reports fix 2/5 (2026-11-24), direct instruction - "keep the
+    // sender's current report spec for a while so follow-ups apply to
+    // it" applies EVEN WHEN this particular edit pushed the report into
+    // needing approval - otherwise a follow-up edit sent before the
+    // owner approves would silently revert to the pre-edit spec.
+    await saveLastReportSelection(phone, { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), lang, format, groupKeys, sortColumnKey: sortColumnKey || null, sortDirection: sortDirection || null, filterOnlyPersonalKeys: filterOnlyPersonalKeys || [] });
     return { case: 'hr_report', replyText: HELD_FOR_APPROVAL_TEXT[lang] || HELD_FOR_APPROVAL_TEXT.english, summaryForOwner: 'HR report held for approval - ' + totalCandidates + ' row(s)', lang };
   }
 
-  await saveLastReportSelection(phone, { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), lang, format, groupKeys });
+  await saveLastReportSelection(phone, { targetsFilters: targets.map((t) => t.filters), columnKeys: includedColumns.map((c) => c.key), lang, format, groupKeys, sortColumnKey: sortColumnKey || null, sortDirection: sortDirection || null, filterOnlyPersonalKeys: filterOnlyPersonalKeys || [] });
 
   // No separate text reply for the fast path - the document(s) + caption
   // ARE the reply (matches the sender's own updated Example 1 exactly) -
@@ -983,5 +1150,6 @@ module.exports = {
   // these are exposed for finer-grained unit tests of one stage alone).
   beginReportRequest,
   continueWithColumnAnswer,
-  finalizeReports
+  finalizeReports,
+  sortCandidates
 };

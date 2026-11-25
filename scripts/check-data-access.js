@@ -60,8 +60,14 @@ async function main() {
   console.log('Defaults - every real HR head is listed, with the owner\'s own confirmed classification');
   console.log('='.repeat(70));
   const defaultItems = await dataAccessService.listDataAccessHeads();
-  check('30 heads listed (no internal-only *Key/rowNumber fields, no non-existent bank/salary columns)', defaultItems.length === 30, 'got ' + defaultItems.length);
+  check('34 heads listed (no internal-only *Key/rowNumber fields, no non-existent bank/salary columns) - 30 + 4 new derived report fields (HR reports fix 2/5)', defaultItems.length === 34, 'got ' + defaultItems.length);
   const byKey = Object.fromEntries(defaultItems.map((h) => [h.key, h]));
+  check('HR reports fix 2/5 (2026-11-24), direct instruction - derived report fields default tier = their SOURCE column\'s own tier: Age/Retirement Date/Birthday Month (from DOB) -> personal, Years of Service (from DOJ) -> official, all isDerived:true', (() => {
+    return byKey.age && byKey.age.tier === 'personal' && byKey.age.isDerived === true
+      && byKey.retirementDate && byKey.retirementDate.tier === 'personal' && byKey.retirementDate.isDerived === true
+      && byKey.birthdayMonth && byKey.birthdayMonth.tier === 'personal' && byKey.birthdayMonth.isDerived === true
+      && byKey.yearsOfService && byKey.yearsOfService.tier === 'official' && byKey.yearsOfService.isDerived === true;
+  })());
   check('Employee Code defaults to official', byKey.employeeId && byKey.employeeId.tier === 'official');
   check('Total Experience defaults to official (confirmed: no behaviour change from today\'s live code)', byKey.totalExperience && byKey.totalExperience.tier === 'official');
   check('Status defaults to official (newly classified - was gated neither way before)', byKey.status && byKey.status.tier === 'official');
@@ -114,7 +120,7 @@ async function main() {
   const unauthorizedGet = await callRoute(workforceRoutes, 'get', '/hr-assistant/data-access', { email: 'not-the-owner@example.com' });
   check('GET is blocked for a non-owner', unauthorizedGet.status === 403);
   const authorizedGet = await callRoute(workforceRoutes, 'get', '/hr-assistant/data-access', { email: OWNER_EMAIL });
-  check('GET returns the full list for the owner', authorizedGet.status === 200 && Array.isArray(authorizedGet.body.items) && authorizedGet.body.items.length === 30);
+  check('GET returns the full list for the owner', authorizedGet.status === 200 && Array.isArray(authorizedGet.body.items) && authorizedGet.body.items.length === 34);
   const unauthorizedPost = await callRoute(workforceRoutes, 'post', '/hr-assistant/data-access/:key', { params: { key: 'dob' }, body: { tier: 'official' }, email: 'not-the-owner@example.com' });
   check('POST is blocked for a non-owner', unauthorizedPost.status === 403);
   const badPost = await callRoute(workforceRoutes, 'post', '/hr-assistant/data-access/:key', { params: { key: 'dob' }, body: { tier: 'nonsense' }, email: OWNER_EMAIL });

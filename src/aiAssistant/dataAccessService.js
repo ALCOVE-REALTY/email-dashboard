@@ -78,6 +78,16 @@ const HEAD_DEFINITIONS = [
   { key: 'employmentType', label: 'Employment Type', tier: 'official' },
   { key: 'doj', label: 'Date of Joining', tier: 'official' },
   { key: 'confirmationDate', label: 'Confirmation Date', tier: 'official', isDerived: true },
+  // HR reports fix 2/5 (2026-11-24), direct instruction - derived report
+  // fields. Default tier = the SOURCE column's own tier (same reasoning
+  // as confirmationDate above, isDerived:true, never a raw sheet column):
+  // Age/Retirement Date/Birthday Month derive from DOB (Personal), Years
+  // of Service derives from DOJ (Official) - all owner-reclassifiable
+  // here exactly like any other head.
+  { key: 'yearsOfService', label: 'Years of Service', tier: 'official', isDerived: true },
+  { key: 'age', label: 'Age', tier: 'personal', isDerived: true },
+  { key: 'retirementDate', label: 'Retirement Date', tier: 'personal', isDerived: true },
+  { key: 'birthdayMonth', label: 'Birthday Month', tier: 'personal', isDerived: true },
   { key: 'tenure', label: 'Tenure', tier: 'official' },
   { key: 'totalExperience', label: 'Total Experience', tier: 'official' },
   { key: 'reportingManager', label: 'Reporting Manager (HOD)', tier: 'official' },

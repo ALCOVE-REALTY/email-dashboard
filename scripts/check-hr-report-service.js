@@ -30,6 +30,7 @@ async function main() {
   const hrReportService = require('../src/aiAssistant/hrReportService');
   const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
   const companyDetailsService = require('../src/aiAssistant/companyDetailsService');
+  const workforceAnalytics = require('../src/workforceAnalytics');
 
   const FAKE_EMPLOYEES = [
     { employeeId: 'E001', name: 'Alice Welder', designation: 'Welder', department: 'Civil', location: 'Ballygunge', company: 'Alcove Developers LLP', reportingManager: 'Tanmoy Mondal', reportingDoer: 'Doer One', status: 'ACTIVE', employmentType: 'Confirmed', contactNumber: '919000000001', doj: new Date('2024-03-15') },
@@ -621,6 +622,166 @@ async function main() {
     const src = fs.readFileSync(require.resolve('../src/aiAssistant/hrReportService.js'), 'utf8');
     return /const title = target\.label \|\| 'HR Report';/.test(src);
   })());
+
+  console.log('='.repeat(70));
+  console.log('HR reports fix 2/5 (2026-11-25), direct instruction - derived columns (Age/Years of Service/Retirement Date/Birthday Month), the "58 age er upor" live bug, filter-on-personal-field triggers approval, and conversational editLastReport (add/remove/sort)');
+  console.log('='.repeat(70));
+  const DOB_EMPLOYEES = [
+    { employeeId: 'D001', name: 'Old Timer', designation: 'Supervisor', department: 'Civil', location: 'Sangam', company: 'Alcove Developers LLP', status: 'ACTIVE', doj: new Date('2010-06-01'), dob: new Date('1960-05-10') },
+    { employeeId: 'D002', name: 'Young Hand', designation: 'Helper', department: 'Civil', location: 'Sangam', company: 'Alcove Developers LLP', status: 'ACTIVE', doj: new Date('2022-01-15'), dob: new Date('1998-02-20') },
+    { employeeId: 'D003', name: 'No Dob On File', designation: 'Helper', department: 'Civil', location: 'Sangam', company: 'Alcove Developers LLP', status: 'ACTIVE', doj: new Date('2020-01-01') }
+  ];
+  check('derived Age column: CODE computes it via workforceAnalytics.calcAge(dob, now) - never the model; an employee with no DOB on file gets null, never 0/NaN', (() => {
+    const col = hrReportService.findColumnByAlias('age');
+    return col.getValue(DOB_EMPLOYEES[0]) === workforceAnalytics.calcAge(DOB_EMPLOYEES[0].dob, new Date())
+      && col.getValue(DOB_EMPLOYEES[2]) === null;
+  })());
+  check('derived Years of Service column reuses the SAME calcAge against DOJ instead of DOB - "whole years elapsed since X" is generic, not DOB-specific', (() => {
+    const col = hrReportService.findColumnByAlias('years of service');
+    return col.getValue(DOB_EMPLOYEES[1]) === workforceAnalytics.calcAge(DOB_EMPLOYEES[1].doj, new Date());
+  })());
+  check('derived Retirement Date = DOB + the company\'s own established retirement age (58), same month/day; null with no DOB on file', (() => {
+    const col = hrReportService.findColumnByAlias('retirement date');
+    return col.getValue(DOB_EMPLOYEES[0]) === new Date(Date.UTC(1960 + 58, 4, 10)).toDateString()
+      && col.getValue(DOB_EMPLOYEES[2]) === null;
+  })());
+  check('derived Birthday Month column returns the DOB\'s month name; null with no DOB on file', (() => {
+    const col = hrReportService.findColumnByAlias('birthday month');
+    return col.getValue(DOB_EMPLOYEES[0]) === 'May' && col.getValue(DOB_EMPLOYEES[2]) === null;
+  })());
+  check('filterEmployeesForReport: ageFilter min/max are inclusive bounds, and an employee with no DOB on file is excluded (never silently treated as age 0)', (() => {
+    const over58 = hrReportService.filterEmployeesForReport(DOB_EMPLOYEES, { ageFilter: { min: 59 } });
+    const bounded = hrReportService.filterEmployeesForReport(DOB_EMPLOYEES, { ageFilter: { min: 20, max: 40 } });
+    return over58.length === 1 && over58[0].employeeId === 'D001'
+      && bounded.length === 1 && bounded[0].employeeId === 'D002';
+  })());
+  check('filterEmployeesForReport: yearsOfServiceFilter works the same way, against DOJ', (() => {
+    const longServing = hrReportService.filterEmployeesForReport(DOB_EMPLOYEES, { yearsOfServiceFilter: { min: 10 } });
+    return longServing.length === 1 && longServing[0].employeeId === 'D001';
+  })());
+  await checkAsync('LIVE INCIDENT (2026-11-25), direct instruction, reproduced exactly - "58 age er uporer staff list din with age column" used to send ALL active staff with no filter and no Age column; now filters to only age>58, renders the requested Age column, and - since Age is a Personal column about OTHERS - correctly holds for approval instead of auto-sending', async () => {
+    const before = (await whatsappAssistant.listPendingApprovals()).length;
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000070', name: 'Someone', lang: 'banglish', text: '58 age er uporer staff list din with age column', history: [],
+      senderEmployee: null, employees: DOB_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', locations: ['Sangam'], columns: ['Name', 'Age'], ageFilter: { min: 59 }, language: 'banglish' }) }
+    });
+    const pendingList = await whatsappAssistant.listPendingApprovals();
+    const created = pendingList[pendingList.length - 1];
+    return pendingList.length === before + 1 && !result.pendingDocuments
+      && result.summaryForOwner === 'HR report held for approval - 1 row(s)'
+      && JSON.stringify(created.pendingReportRender.columnKeys) === JSON.stringify(['name', 'age']);
+  });
+  await checkAsync('HR reports fix 2/5, direct instruction - "a filter on a Personal derived field counts as using it": filtering on age WITHOUT requesting the Age column still holds the report for approval (can\'t learn someone else\'s age by filtering instead of asking for the column)', async () => {
+    const before = (await whatsappAssistant.listPendingApprovals()).length;
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000071', name: 'Someone', lang: 'english', text: '50+ in Sangam, Name only', history: [],
+      senderEmployee: null, employees: DOB_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', locations: ['Sangam'], columns: ['Name'], ageFilter: { min: 50 }, language: 'english' }) }
+    });
+    const after = (await whatsappAssistant.listPendingApprovals()).length;
+    return after === before + 1 && !result.pendingDocuments && result.summaryForOwner.startsWith('HR report held for approval');
+  });
+  await checkAsync('the self-target exception still applies when the ONLY filter-triggered personal field is the sender\'s own: a sender filtering on their own age, asking only for Name, sends directly - no approval (same rule as requesting your own personal column directly)', async () => {
+    const senderEmployee = DOB_EMPLOYEES[0];
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000072', name: 'Old Timer', lang: 'english', text: 'amar nijer list dao', history: [],
+      senderEmployee, employees: [DOB_EMPLOYEES[0]],
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', columns: ['Name'], ageFilter: { min: 50 }, language: 'english' }) }
+    });
+    return Boolean(result.pendingDocuments) && result.pendingDocuments.targets[0].candidates.length === 1;
+  });
+
+  const EDIT_FLOW_EMPLOYEES = [
+    { employeeId: 'F001', name: 'Zara', designation: 'Engineer', department: 'Civil', location: 'Sangam', company: 'Alcove Developers LLP', reportingDoer: 'Doer Z', status: 'ACTIVE', doj: new Date('2021-05-01') },
+    { employeeId: 'F002', name: 'Amit', designation: 'Engineer', department: 'Civil', location: 'Sangam', company: 'Alcove Developers LLP', reportingDoer: 'Doer A', status: 'ACTIVE', doj: new Date('2019-08-15') },
+    { employeeId: 'F003', name: 'Mina', designation: 'Engineer', department: 'Civil', location: 'Sangam', company: 'Alcove Developers LLP', reportingDoer: 'Doer M', status: 'ACTIVE', doj: new Date('2023-01-10') }
+  ];
+  check('sortCandidates sorts by the column\'s raw sortValue (chronological Date compare), never the display STRING that getValue renders (which would sort "Sat Aug 15 2019" by day-of-week letter, not by actual date)', (() => {
+    const asc = hrReportService.sortCandidates(EDIT_FLOW_EMPLOYEES, 'doj', 'asc');
+    const desc = hrReportService.sortCandidates(EDIT_FLOW_EMPLOYEES, 'doj', 'desc');
+    return asc.map((e) => e.employeeId).join(',') === 'F002,F001,F003'
+      && desc.map((e) => e.employeeId).join(',') === 'F003,F001,F002';
+  })());
+  check('sortCandidates places a record with no value for the sort column LAST regardless of direction, and is a no-op (same array back) when sortColumnKey is falsy or unrecognized', (() => {
+    const withNull = EDIT_FLOW_EMPLOYEES.concat([{ employeeId: 'F004', name: 'NoDoj' }]);
+    const asc = hrReportService.sortCandidates(withNull, 'doj', 'asc');
+    const desc = hrReportService.sortCandidates(withNull, 'doj', 'desc');
+    return asc[asc.length - 1].employeeId === 'F004' && desc[desc.length - 1].employeeId === 'F004'
+      && hrReportService.sortCandidates(EDIT_FLOW_EMPLOYEES, null, 'asc') === EDIT_FLOW_EMPLOYEES
+      && hrReportService.sortCandidates(EDIT_FLOW_EMPLOYEES, 'not-a-real-column', 'asc') === EDIT_FLOW_EMPLOYEES;
+  })());
+
+  const EDIT_PHONE_SORT = '919000000073';
+  await checkAsync('editLastReport flow, sort - a fresh report (official columns only, direct-send) remembers its spec; "DOJ onujayi sort korun" resends the SAME report chronologically sorted by DOJ, never needing to re-ask for filters/columns', async () => {
+    await hrReportService.handleHrReportRequest({
+      phone: EDIT_PHONE_SORT, name: 'Someone', lang: 'banglish', text: 'Sangam-er staff list dao', history: [],
+      senderEmployee: null, employees: EDIT_FLOW_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', locations: ['Sangam'], columns: ['Name'], format: 'pdf', language: 'banglish' }) }
+    });
+    const result = await hrReportService.handleHrReportRequest({
+      phone: EDIT_PHONE_SORT, name: 'Someone', lang: 'banglish', text: 'DOJ onujayi sort korun', history: [],
+      senderEmployee: null, employees: EDIT_FLOW_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, editLastReport: { sortColumn: 'DOJ', sortDirection: 'asc' }, language: 'banglish' }) }
+    });
+    return Boolean(result.pendingDocuments) && result.pendingDocuments.targets[0].candidates.map((e) => e.employeeId).join(',') === 'F002,F001,F003';
+  });
+
+  const EDIT_PHONE_ADD = '919000000074';
+  await checkAsync('editLastReport flow, step 1 - baseline report (Name, Doer Name), official columns only -> sends directly (no approval) and is remembered as the sender\'s "last report"', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: EDIT_PHONE_ADD, name: 'Someone', lang: 'banglish', text: 'Sangam-er staff list dao, Name o Doer Name soho', history: [],
+      senderEmployee: null, employees: EDIT_FLOW_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', locations: ['Sangam'], columns: ['Name', 'Doer Name'], format: 'pdf', language: 'banglish' }) }
+    });
+    return Boolean(result.pendingDocuments) && result.pendingDocuments.includedColumns.map((c) => c.key).join(',') === 'name,reportingDoer';
+  });
+  await checkAsync('editLastReport flow, step 2 - "sobar Age column add korun" adds the Age column (appended at the end) and resends the SAME report; adding a Personal column about others now correctly holds it for approval instead of auto-sending', async () => {
+    const before = (await whatsappAssistant.listPendingApprovals()).length;
+    const result = await hrReportService.handleHrReportRequest({
+      phone: EDIT_PHONE_ADD, name: 'Someone', lang: 'banglish', text: 'sobar Age column add korun', history: [],
+      senderEmployee: null, employees: EDIT_FLOW_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, editLastReport: { addColumns: ['Age'] }, language: 'banglish' }) }
+    });
+    const pendingList = await whatsappAssistant.listPendingApprovals();
+    const created = pendingList[pendingList.length - 1];
+    return pendingList.length === before + 1 && !result.pendingDocuments
+      && JSON.stringify(created.pendingReportRender.columnKeys) === JSON.stringify(['name', 'reportingDoer', 'age']);
+  });
+  await checkAsync('editLastReport flow, step 3 - "Doer column baad din", sent WHILE the report from step 2 is still awaiting approval, correctly edits the MOST RECENT spec (name+doer+age), not the older step-1 spec - the "keep the current spec" memory survives an edit that triggered approval', async () => {
+    const before = (await whatsappAssistant.listPendingApprovals()).length;
+    const result = await hrReportService.handleHrReportRequest({
+      phone: EDIT_PHONE_ADD, name: 'Someone', lang: 'banglish', text: 'Doer column baad din', history: [],
+      senderEmployee: null, employees: EDIT_FLOW_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, editLastReport: { removeColumns: ['Doer Name'] }, language: 'banglish' }) }
+    });
+    const pendingList = await whatsappAssistant.listPendingApprovals();
+    const created = pendingList[pendingList.length - 1];
+    return pendingList.length === before + 1 && !result.pendingDocuments
+      && JSON.stringify(created.pendingReportRender.columnKeys) === JSON.stringify(['name', 'age']);
+  });
+  await checkAsync('editLastReport flow, step 4 - "DOJ onujayi sort korun" adds a sort on top of the still-pending (name, age) spec', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: EDIT_PHONE_ADD, name: 'Someone', lang: 'banglish', text: 'DOJ onujayi sort korun', history: [],
+      senderEmployee: null, employees: EDIT_FLOW_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, editLastReport: { sortColumn: 'DOJ', sortDirection: 'asc' }, language: 'banglish' }) }
+    });
+    const pendingList = await whatsappAssistant.listPendingApprovals();
+    const created = pendingList[pendingList.length - 1];
+    return !result.pendingDocuments && created.pendingReportRender.sortColumnKey === 'doj' && created.pendingReportRender.sortDirection === 'asc'
+      && JSON.stringify(created.pendingReportRender.columnKeys) === JSON.stringify(['name', 'age']);
+  });
+  await checkAsync('editLastReport flow, step 5 - "eta excel-e dao" (the already-shipped resendLastAsFormat) changes ONLY the format, never disturbing the columns/sort this same conversation just built up via editLastReport', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: EDIT_PHONE_ADD, name: 'Someone', lang: 'banglish', text: 'eta excel-e dao', history: [],
+      senderEmployee: null, employees: EDIT_FLOW_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, resendLastAsFormat: 'excel', language: 'banglish' }) }
+    });
+    const pendingList = await whatsappAssistant.listPendingApprovals();
+    const created = pendingList[pendingList.length - 1];
+    return !result.pendingDocuments && created.pendingReportRender.format === 'excel' && created.pendingReportRender.sortColumnKey === 'doj'
+      && JSON.stringify(created.pendingReportRender.columnKeys) === JSON.stringify(['name', 'age']);
+  });
 
   console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed');
