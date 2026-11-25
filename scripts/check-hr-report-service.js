@@ -122,6 +122,12 @@ async function main() {
     const rows = hrReportService.filterEmployeesForReport(FAKE_EMPLOYEES, { designation: 'welder' });
     return rows.length === 1 && rows[0].employeeId === 'E001'; // Bob (E002) is INACTIVE, excluded by default
   })());
+  check('HR reports fix (2026-11-25), direct instruction, Part B item 1 - reportingDoer/reportingManager filters match by substring against the real name, same convention as designation (a roster filter, never needing an alias system)', (() => {
+    const byDoer = hrReportService.filterEmployeesForReport(FAKE_EMPLOYEES, { reportingDoer: 'Doer One' });
+    const byManager = hrReportService.filterEmployeesForReport(FAKE_EMPLOYEES, { reportingManager: 'Radha Biswas' });
+    return byDoer.length === 1 && byDoer[0].employeeId === 'E001' // Bob (E002) is INACTIVE, excluded by default - same as the designation test above
+      && byManager.length === 2 && byManager.some((e) => e.employeeId === 'E003') && byManager.some((e) => e.employeeId === 'E004'); // both Carol and Dave report to Radha Biswas
+  })());
   check('resolvedLocations (pre-resolved via a confirmed site alias) filters by the REAL value(s), ignoring the raw `location` hint', (() => {
     const rows = hrReportService.filterEmployeesForReport(FAKE_EMPLOYEES, { resolvedLocations: ['Srirampur'] });
     return rows.length === 1 && rows[0].employeeId === 'E003';
@@ -781,6 +787,37 @@ async function main() {
     const created = pendingList[pendingList.length - 1];
     return !result.pendingDocuments && created.pendingReportRender.format === 'excel' && created.pendingReportRender.sortColumnKey === 'doj'
       && JSON.stringify(created.pendingReportRender.columnKeys) === JSON.stringify(['name', 'age']);
+  });
+
+  console.log('='.repeat(70));
+  console.log('HR reports fix (2026-11-25), direct instruction, Part B item 1 - "Archana Shroff er doer list dao" style requests (a roster under a named Doer/HOD) go through the report engine directly, never the old text-list-in-an-approval-card engine, and never hit a row-count cap');
+  console.log('='.repeat(70));
+  const DOER_ROSTER_EMPLOYEES = [];
+  for (let i = 0; i < 25; i++) {
+    DOER_ROSTER_EMPLOYEES.push({ employeeId: 'DR' + i, name: 'Roster Employee ' + i, designation: 'Engineer', department: 'Civil', company: 'Alcove Developers LLP', reportingDoer: 'Archana Shroff', status: 'ACTIVE', doj: new Date('2022-01-01') });
+  }
+  await checkAsync('LIVE BUG, exact phrasing - "Archana Shroff er doer list dao" with 25 matching employees (well past the old engine\'s 20-row cap) sends DIRECTLY as a report (official columns only), never an approval card, never dropped/capped - this is the routing/cap fix itself (deterministic, via the deps.extract seam); the model\'s OWN classification of this exact phrasing is not yet covered by a real-model scenario', async () => {
+    const before = (await whatsappAssistant.listPendingApprovals()).length;
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000090', name: 'Someone', lang: 'banglish', text: 'Archana Shroff er doer list dao', history: [],
+      senderEmployee: null, employees: DOER_ROSTER_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', reportingDoer: 'Archana Shroff', columns: ['Emp Code', 'Name'], language: 'banglish' }) }
+    });
+    const after = (await whatsappAssistant.listPendingApprovals()).length;
+    return after === before // no approval card created - official columns, direct send
+      && Boolean(result.pendingDocuments) && result.pendingDocuments.targets.length === 1
+      && result.pendingDocuments.targets[0].candidates.length === 25 // all 25, never capped at 20
+      && result.pendingDocuments.targets[0].label === 'Doer: Archana Shroff';
+  });
+  await checkAsync('a Doer-rostered report with a Personal column about others (e.g. Contact No) still correctly needs approval - the routing fix never bypasses the EXISTING access-tier rule, only the old engine\'s unrelated row-count cap', async () => {
+    const before = (await whatsappAssistant.listPendingApprovals()).length;
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000091', name: 'Someone', lang: 'english', text: 'Archana Shroff er doer list dao with contact no', history: [],
+      senderEmployee: null, employees: DOER_ROSTER_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', reportingDoer: 'Archana Shroff', columns: ['Name', 'Contact No'], language: 'english' }) }
+    });
+    const after = (await whatsappAssistant.listPendingApprovals()).length;
+    return after === before + 1 && !result.pendingDocuments;
   });
 
   console.log('='.repeat(70));

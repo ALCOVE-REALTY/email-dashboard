@@ -307,6 +307,14 @@ function filterEmployeesForReport(employees, query) {
     else if (query.company && !matchesSubstring(e.company, query.company)) return false;
     if (query.employmentType && String(e.employmentType || '').toLowerCase() !== String(query.employmentType).toLowerCase()) return false;
     if (query.groupD && !matchesSubstring(e.groupD, query.groupD)) return false;
+    // HR reports fix (2026-11-25), direct instruction, Part B item 1 -
+    // "Archana Shroff er doer list dao" is a roster filter (everyone
+    // under this Doer/HOD), not a single-answer lookup - plain
+    // substring match against the real name, same convention as
+    // designation/groupD above (a person's own name needs no alias
+    // system, unlike Site/Department/Company names).
+    if (query.reportingDoer && !matchesSubstring(e.reportingDoer, query.reportingDoer)) return false;
+    if (query.reportingManager && !matchesSubstring(e.reportingManager, query.reportingManager)) return false;
     if (query.dojMonth) {
       if (!e.doj) return false;
       if (e.doj.getMonth() + 1 !== Number(query.dojMonth)) return false;
@@ -379,7 +387,7 @@ function siteDisplayLabel(resolvedValue, originalHint) {
 // a code to the real company name (and falls back to the raw hint only
 // when nothing could be resolved at all), so resolvedCompany is always
 // the right value to use here - no new lookup needed.
-function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLocations, companyHint, resolvedCompany, departmentHint }) {
+function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLocations, companyHint, resolvedCompany, departmentHint, reportingDoerHint, reportingManagerHint }) {
   if (locationHint) {
     const resolved = (resolvedLocations && resolvedLocations.length) ? resolvedLocations[0]
       : ((resolvedCompanyLocations && resolvedCompanyLocations.length) ? resolvedCompanyLocations[0] : null);
@@ -388,6 +396,12 @@ function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLoc
   if (resolvedCompany) return String(resolvedCompany).trim();
   if (companyHint) return String(companyHint).trim();
   if (departmentHint) return String(departmentHint).trim();
+  // HR reports fix (2026-11-25), direct instruction, Part B item 1 - a
+  // Doer/HOD-rostered report (no location/company/dept named at all)
+  // still gets a real caption/filename instead of falling back to a
+  // completely generic one.
+  if (reportingDoerHint) return 'Doer: ' + String(reportingDoerHint).trim();
+  if (reportingManagerHint) return 'HOD: ' + String(reportingManagerHint).trim();
   return null;
 }
 async function resolveOneTargetFromFilters(filters, employees) {
@@ -399,7 +413,9 @@ async function resolveOneTargetFromFilters(filters, employees) {
     resolvedCompanyLocations: resolvedFilters.resolvedCompanyLocations,
     companyHint: filters.company,
     resolvedCompany: resolvedFilters.resolvedCompany,
-    departmentHint: filters.department
+    departmentHint: filters.department,
+    reportingDoerHint: filters.reportingDoer,
+    reportingManagerHint: filters.reportingManager
   });
   return { locationHint: filters.location, filters, candidates, label, statusLabel: titleCaseStatus(filters.status) };
 }
@@ -414,11 +430,16 @@ function hrReportRequestTool() {
       parameters: {
         type: 'object',
         properties: {
-          matchesReportIntent: { type: 'boolean', description: 'true only if the sender is asking for a report/list/roster/document of MULTIPLE employees, or a count/headcount of employees matching some filter. false for anything else (one named person\'s own single field, a single department\'s HOD/Doer lookup, a casual message, attendance, confirmations, etc. - those are handled by a separate existing flow). When false, every other field is ignored.' },
+          matchesReportIntent: {
+            type: 'boolean',
+            description: 'true only if the sender is asking for a report/list/roster/document of MULTIPLE employees, or a count/headcount of employees matching some filter. This INCLUDES "everyone/the list of people under/reporting to a named HOD or Doer" - e.g. "Archana Shroff er doer list dao" means every employee whose Reporting DOER is Archana Shroff, a ROSTER of (potentially many) employees, not a single answer - set this true and use reportingDoer/reportingManager below, never fall through to a different flow just because the phrasing mentions "Doer"/"HOD". false for anything that is genuinely a SINGLE answer about one thing: "who IS the HOD/Doer of department X" (the department\'s own one named manager, not a roster), one named person\'s own single field, a casual message, attendance, confirmations, etc. - those are handled by a separate existing flow. When false, every other field is ignored.'
+          },
           intent: { type: 'string', enum: ['count', 'list'], description: '"count" only when the sender wants just a number (e.g. "koto jon"/"how many") - never a document for this. "list" for an actual roster/report, even a short one.' },
           status: { type: 'string', description: 'The employment status to filter on, in the sender\'s own words if they named one (e.g. "Active", "Inactive", "Notice Period", or "all"/"sob" for every status) - omit entirely if status was not mentioned at all (code then defaults to Active).' },
           designation: { type: 'string', description: 'Role/title keyword, e.g. "engineer", "welder" - omit if none named.' },
           department: { type: 'string', description: 'Department name or a distinctive substring, exactly as the sender said it - omit if none named.' },
+          reportingDoer: { type: 'string', description: 'A Reporting DOER\'s name, when the sender is asking for the roster of everyone under a named Doer (e.g. "Archana Shroff er doer list dao" -> "Archana Shroff") - omit if none named.' },
+          reportingManager: { type: 'string', description: 'An HOD\'s name, when the sender is asking for the roster of everyone under a named HOD (e.g. "Tanmoy Mondal-er under-e kara achen?" -> "Tanmoy Mondal") - omit if none named.' },
           locations: { type: 'array', items: { type: 'string' }, description: 'One entry per DISTINCT site/location the sender named, in the order they said them (e.g. "Sangam & Triveni" -> ["Sangam","Triveni"]) - each becomes its own separate report. Omit entirely (empty array) if no site was mentioned at all.' },
           company: { type: 'string', description: 'Company name or company code, exactly as the sender said it (e.g. "ADLLP") - omit if none named.' },
           employmentType: { type: 'string', description: '"Probation" or "Confirmed" - omit if not mentioned.' },
@@ -944,7 +965,9 @@ async function beginReportRequest({ phone, name, lang, text, extracted, senderEm
     dojMonth: extracted.dojMonth || null,
     dojYear: extracted.dojYear || null,
     ageFilter: extracted.ageFilter || null,
-    yearsOfServiceFilter: extracted.yearsOfServiceFilter || null
+    yearsOfServiceFilter: extracted.yearsOfServiceFilter || null,
+    reportingDoer: extracted.reportingDoer || null,
+    reportingManager: extracted.reportingManager || null
   };
   // HR reports fix 2/5 (2026-11-24), direct instruction - "a filter on a
   // Personal derived field counts as using it" - a filter-only field
