@@ -11440,6 +11440,13 @@ function uniqueBySenderPhone(list, phoneKey) {
   return out;
 }
 async function buildDailySummary() {
+  // HARDENING (2026-11-25, direct instruction), point 9 - captured FIRST,
+  // before any of this function's own (successful) Redis reads below -
+  // every one of those goes through redisHealth.guardedRead, whose own
+  // recordSuccess() would otherwise silently clear a real, still-ongoing
+  // outage before this function ever got a chance to report it.
+  const redisPaused = redisHealth.shouldPauseNonUrgentWork();
+  const redisNotice = redisPaused ? redisHealth.currentNotice() : null;
   const { date } = istNow();
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const log = await listAutoReplyLog(2000);
@@ -11463,6 +11470,16 @@ async function buildDailySummary() {
   const lines = ['SUBH daily summary (' + date + '):'];
   const gw = await gatewayStatusSummary();
   if (!gw.isConnected) lines.push('⚠️ WhatsApp has been disconnected since ' + gw.disconnectedSinceLabel + ' - ' + reconnectHintText('english'));
+  // HARDENING (2026-11-25, direct instruction), point 9 - surface the
+  // infra-health signals the other hardening points already track, but
+  // only ever as a WARNING line (same posture as the gateway-disconnected
+  // line above) - never a daily noise metric when everything is healthy.
+  if (redisPaused) lines.push(redisNotice ? redisNotice.text : '⚠️ Data storage has had repeated recent failures - some reminders/approvals/replies may not have saved.');
+  // 100 mirrors WEBHOOK_DEAD_LETTERS_CAP (whatsappGatewayV1Receive.js's
+  // own list is already capped there - not exported, so this count is
+  // effectively exact, never an undercount).
+  const deadLetters = await gatewayV1Receive.listWebhookDeadLetters(100);
+  if (deadLetters.length) lines.push('⚠️ Webhook events stuck in the dead-letter queue (retried and never recovered): ' + deadLetters.length);
   lines.push('Auto-replies sent yesterday: ' + sentYesterday.length +
     (Object.keys(byCase).length ? ' (' + Object.entries(byCase).map(([c, n]) => c + ': ' + n).join(', ') + ')' : ''));
   const uniqueFollowups = uniqueBySenderPhone(followups, 'chatId');

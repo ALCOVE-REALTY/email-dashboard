@@ -29,6 +29,7 @@ const attendanceRequestService = require('../src/aiAssistant/attendanceRequestSe
 const whatsapp = require('../src/whatsappService');
 const gatewayModeV1 = require('../src/whatsappGatewayMode');
 const gatewayV1Receive = require('../src/whatsappGatewayV1Receive');
+const redisHealth = require('../src/redisHealth');
 const employeeService = require('../src/employeeService');
 const inboxLogArchive = require('../src/inboxLogArchive');
 const memoryService = require('../src/aiAssistant/memoryService');
@@ -10822,6 +10823,46 @@ async function checkAsyncRealModel(label, fn) {
       return Boolean(mine) && mine.status === 'Not delivered' && mine.retryCount === 2 && mine.confirmed === 'No' &&
         typeof mine.time === 'string' && typeof mine.httpStatus !== 'undefined' &&
         !excluded.some((r) => r.chatId === '919999993003');
+    });
+    console.log('='.repeat(70));
+    console.log('HARDENING (2026-11-25, direct instruction), point 9 - buildDailySummary() surfaces the infra-health signals the other hardening points already track (webhook dead-letter depth from point 1, Redis circuit-breaker state from point 5) - WARNING lines only, same posture as the existing gateway-disconnected line, never daily noise when everything is healthy');
+    console.log('='.repeat(70));
+    await checkAsync('buildDailySummary: with no dead letters and Redis healthy, neither new warning line appears at all', async () => {
+      redisHealth.recordWriteSuccess();
+      const origList = gatewayV1Receive.listWebhookDeadLetters;
+      gatewayV1Receive.listWebhookDeadLetters = async () => [];
+      try {
+        const text = await whatsappAssistant.buildDailySummary();
+        return !/dead-letter/i.test(text) && !/data storage/i.test(text);
+      } finally { gatewayV1Receive.listWebhookDeadLetters = origList; }
+    });
+    await checkAsync('buildDailySummary: a non-empty webhook dead-letter queue (point 1) is surfaced with its real count', async () => {
+      const origList = gatewayV1Receive.listWebhookDeadLetters;
+      gatewayV1Receive.listWebhookDeadLetters = async () => [{ evt: {} }, { evt: {} }, { evt: {} }];
+      try {
+        const text = await whatsappAssistant.buildDailySummary();
+        return /dead-letter/i.test(text) && text.includes('3');
+      } finally { gatewayV1Receive.listWebhookDeadLetters = origList; }
+    });
+    await checkAsync('buildDailySummary: once the Redis circuit breaker (point 5) has tripped (3+ consecutive write failures), the summary includes the SAME human-readable notice text the System strip already shows - never a silent gap', async () => {
+      const origList = gatewayV1Receive.listWebhookDeadLetters;
+      gatewayV1Receive.listWebhookDeadLetters = async () => [];
+      try {
+        redisHealth.recordWriteFailure(new Error('simulated outage for point 9 test'));
+        redisHealth.recordWriteFailure(new Error('simulated outage for point 9 test'));
+        redisHealth.recordWriteFailure(new Error('simulated outage for point 9 test'));
+        // Captured BEFORE calling buildDailySummary - that call itself
+        // makes several of its OWN successful Redis reads, which (by
+        // design, same as production) clear this simulated failure via
+        // recordSuccess() before returning; the fix under test is that
+        // buildDailySummary captures this state FIRST, internally.
+        const noticeAtCallTime = redisHealth.currentNotice();
+        const text = await whatsappAssistant.buildDailySummary();
+        return Boolean(noticeAtCallTime) && text.includes(noticeAtCallTime.text);
+      } finally {
+        redisHealth.recordWriteSuccess(); // resets the shared global state for every later test in this file
+        gatewayV1Receive.listWebhookDeadLetters = origList;
+      }
     });
   } finally {
     whatsapp.listMessages = origListMessagesForVerify;
