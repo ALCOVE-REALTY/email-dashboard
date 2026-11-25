@@ -468,11 +468,27 @@ async function checkReplyPipeline() {
 // cadence at any realistic poll interval, so this only fires on a
 // genuine stop, never a normal gap between routine writes.
 const SCHEDULER_HEARTBEAT_STALE_MS = 3 * 60 * 1000;
+// LIVE INCIDENT (2026-11-25, direct instruction) - "18:13 'WhatsApp poll
+// loop appears stopped: no scheduler heartbeat recorded yet' right after
+// a deploy... add a startup grace period." ROOT CAUSE: a brand new
+// process has genuinely never written a heartbeat yet (the first tick
+// only fires after its own pollIntervalMs/sendFlushMs delay, plus
+// whatever time the KV lease takes to acquire on a rolling deploy -
+// worst case under 30s today) - this used to be treated as an immediate
+// failure with no distinction from "the loop really did stop". Grace
+// is measured from SERVER_START_TS (this process's own start, reset by
+// definition on every restart/deploy), never a durable/cross-process
+// timestamp - exactly "a few minutes after a start", nothing more.
+const STARTUP_GRACE_MS = 5 * 60 * 1000;
 async function checkSchedulerHeartbeat() {
   try {
     const whatsappAssistant = require('./whatsappAssistant');
     const heartbeat = await withTimeout(whatsappAssistant.getSchedulerHeartbeat(), HEALTH_CHECK_TIMEOUT_MS);
-    if (!heartbeat) return { ok: false, error: 'no scheduler heartbeat recorded yet - the poll loop may never have started' };
+    if (!heartbeat) {
+      const sinceStartMs = Date.now() - whatsappAssistant.SERVER_START_TS;
+      if (sinceStartMs < STARTUP_GRACE_MS) return { ok: true, note: 'no scheduler heartbeat yet, but within startup grace period (' + Math.round(sinceStartMs / 1000) + 's since process start)' };
+      return { ok: false, error: 'no scheduler heartbeat recorded yet - the poll loop may never have started' };
+    }
     const ageMs = Date.now() - heartbeat.ts;
     if (ageMs > SCHEDULER_HEARTBEAT_STALE_MS) {
       return { ok: false, error: 'last heartbeat was ' + Math.round(ageMs / 1000) + 's ago (commit ' + (heartbeat.commitId || 'unknown') + ') - the poll loop appears to have stopped advancing' };
@@ -504,7 +520,12 @@ async function checkSendFlushHeartbeat() {
   try {
     const whatsappAssistant = require('./whatsappAssistant');
     const heartbeat = await withTimeout(whatsappAssistant.getSendFlushHeartbeat(), HEALTH_CHECK_TIMEOUT_MS);
-    if (!heartbeat) return { ok: false, error: 'no send-flush heartbeat recorded yet - that tick may never have started' };
+    if (!heartbeat) {
+      // Same startup-grace reasoning as checkSchedulerHeartbeat just above.
+      const sinceStartMs = Date.now() - whatsappAssistant.SERVER_START_TS;
+      if (sinceStartMs < STARTUP_GRACE_MS) return { ok: true, note: 'no send-flush heartbeat yet, but within startup grace period (' + Math.round(sinceStartMs / 1000) + 's since process start)' };
+      return { ok: false, error: 'no send-flush heartbeat recorded yet - that tick may never have started' };
+    }
     const ageMs = Date.now() - heartbeat.ts;
     if (ageMs > SEND_FLUSH_HEARTBEAT_STALE_MS) {
       return { ok: false, error: 'last send-flush heartbeat was ' + Math.round(ageMs / 1000) + 's ago - the auto-send/delivery-check/reply-watchdog/events-poll tick appears to have stopped advancing' };

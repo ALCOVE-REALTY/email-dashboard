@@ -265,11 +265,26 @@ async function main() {
   console.log('checkSchedulerHeartbeat - LIVE INCIDENT FOLLOW-UP: a hung poll loop that still "looks" alive from the other 3 checks alone');
   console.log('='.repeat(70));
   const origGetSchedulerHeartbeat = whatsappAssistant.getSchedulerHeartbeat;
-  await checkAsync('no heartbeat ever recorded (fresh deploy / scheduler never started) -> ok:false with a clear reason', async () => {
+  const origServerStartTs = whatsappAssistant.SERVER_START_TS;
+  // LIVE INCIDENT (2026-11-25), direct instruction - "18:13 'no scheduler
+  // heartbeat recorded yet' right after a deploy... add a startup grace
+  // period" - a brand new process (this test's own real SERVER_START_TS,
+  // set moments ago when this script's own require() ran) genuinely
+  // hasn't written a heartbeat yet; that must NOT be an immediate alarm.
+  await checkAsync('no heartbeat ever recorded, but within the startup grace period (fresh deploy, process just started) -> ok:true, never a false alarm', async () => {
     whatsappAssistant.getSchedulerHeartbeat = async () => null;
     const monitor = freshMonitor();
     const result = await monitor.checkSchedulerHeartbeat();
     whatsappAssistant.getSchedulerHeartbeat = origGetSchedulerHeartbeat;
+    return result.ok === true && /startup grace period/.test(result.note || '');
+  });
+  await checkAsync('no heartbeat ever recorded AND the startup grace period has long passed -> ok:false with a clear reason - this is the real hung-loop-since-launch shape, never masked by the grace period', async () => {
+    whatsappAssistant.getSchedulerHeartbeat = async () => null;
+    whatsappAssistant.SERVER_START_TS = Date.now() - 10 * 60 * 1000;
+    const monitor = freshMonitor();
+    const result = await monitor.checkSchedulerHeartbeat();
+    whatsappAssistant.getSchedulerHeartbeat = origGetSchedulerHeartbeat;
+    whatsappAssistant.SERVER_START_TS = origServerStartTs;
     return result.ok === false && /never have started/.test(result.error);
   });
   await checkAsync('a heartbeat written 30s ago (well within the normal write cadence) -> ok:true', async () => {
@@ -298,11 +313,20 @@ async function main() {
   console.log('checkSendFlushHeartbeat - LIVE INCIDENT (2026-11-23), direct instruction - a SEPARATE tick (processDueAutoSends/processDueDeliveryChecks/checkReplyLatencyWatchdog/the new gateway\'s /events poll) can freeze independently of the main poll loop above, and must be caught the same way');
   console.log('='.repeat(70));
   const origGetSendFlushHeartbeat = whatsappAssistant.getSendFlushHeartbeat;
-  await checkAsync('no send-flush heartbeat ever recorded -> ok:false with a clear reason', async () => {
+  await checkAsync('no send-flush heartbeat ever recorded, but within the startup grace period -> ok:true, never a false alarm', async () => {
     whatsappAssistant.getSendFlushHeartbeat = async () => null;
     const monitor = freshMonitor();
     const result = await monitor.checkSendFlushHeartbeat();
     whatsappAssistant.getSendFlushHeartbeat = origGetSendFlushHeartbeat;
+    return result.ok === true && /startup grace period/.test(result.note || '');
+  });
+  await checkAsync('no send-flush heartbeat ever recorded AND the startup grace period has long passed -> ok:false with a clear reason', async () => {
+    whatsappAssistant.getSendFlushHeartbeat = async () => null;
+    whatsappAssistant.SERVER_START_TS = Date.now() - 10 * 60 * 1000;
+    const monitor = freshMonitor();
+    const result = await monitor.checkSendFlushHeartbeat();
+    whatsappAssistant.getSendFlushHeartbeat = origGetSendFlushHeartbeat;
+    whatsappAssistant.SERVER_START_TS = origServerStartTs;
     return result.ok === false && /never have started/.test(result.error);
   });
   await checkAsync('a send-flush heartbeat written 5s ago (well within the ~2s tick cadence) -> ok:true', async () => {
@@ -427,12 +451,36 @@ async function main() {
       const second = await monitor.runHealthCheck();
       await checkAsync('a SECOND consecutive failing tick does NOT re-send the alert (debounced, never spams every 2 minutes)', async () =>
         second.ok === false && second.alertSent === false && whatsappAlertCalls === 1 && emailAlertCalls === 1);
+      // PRE-EXISTING GAP, found while adding the startup-grace tests above
+      // (unrelated to that fix - confirmed by reproducing this against the
+      // UNMODIFIED code too) - getAlertDebounceState()/setAlertDebounceState()
+      // use systemHealthMonitor.js's OWN raw Redis client (re-checked fresh
+      // on every call, never cached), separate from whatsappAssistant.js's
+      // own ALREADY-WARMED client that setSystemHealthAlert/getSystemHealthAlert
+      // use (warmed up above, BEFORE REDIS_ENV_VARS is deleted, exactly so
+      // THOSE keep working through the simulated outage). So while
+      // REDIS_ENV_VARS is deleted, "first"/"second" above correctly keep
+      // the debounce flag updated, but ONLY in this module's in-memory
+      // fallback (getRawRedisClient() returns null the whole time) - never
+      // durably written. The moment REDIS_ENV_VARS is restored below,
+      // getAlertDebounceState() switches straight back to reading REAL KV,
+      // which still holds whatever UNRELATED, earlier test in this same
+      // file happened to leave there - not what this process's own memory
+      // (correctly) knows. Captured HERE, while still in the "down" window
+      // (so this reads the correct, up-to-date in-memory value), and
+      // explicitly written through once KV is reachable again, right
+      // below - this is exactly what a real recovering process should do
+      // (its own live memory is strictly more current than a KV store that
+      // was unreachable while that memory was updated), so this is a
+      // reasonable stand-in for a small real fix, not just a test workaround.
+      const debounceStateFromOutageMemory = await monitor.getAlertDebounceState();
       // Now simulate recovery - ALL THREE checks must pass, so the KV env
       // vars need restoring too (not just the gateway mock) or checkKv
       // alone would still correctly report ok:false and this would be
       // testing the wrong thing.
       whatsapp.getConnectionStatus = async () => ({ connected: true, status: 'connected' });
       REDIS_ENV_VARS.forEach((k) => { if (savedEnv[k] !== undefined) process.env[k] = savedEnv[k]; });
+      await monitor.setAlertDebounceState(debounceStateFromOutageMemory);
       // checkSchedulerHeartbeat (added alongside the other 3 checks) needs
       // a fresh heartbeat too, or "recovered" would stay ok:false forever
       // on this check alone, regardless of the other 3 - a real run would
