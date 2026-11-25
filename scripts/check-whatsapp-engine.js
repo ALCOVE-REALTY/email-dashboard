@@ -3080,36 +3080,92 @@ async function checkAsyncRealModel(label, fn) {
       global.fetch = originalFetch;
     }
   });
-  await checkAsync('delivery tracking: when the 60s-later retry ALSO fails, the message is marked "not_delivered", a clear owner alert names the sender and says "Not delivered", and no further retry is left queued', async () => {
+  await checkAsync('HARDENING (2026-11-25, direct instruction), Part A point 5 - "replies that fail because the gateway is down stay queued and are sent automatically when it recovers": a failure that still looks transient after the 60s retry keeps retrying again (re-queued, not given up on after exactly one retry like before) - a real multi-minute outage, not just a brief hiccup', async () => {
     const phone = '910000001006';
     const originalEnv = process.env.WHATSAPP_ASSISTANT_REAL_SEND;
     process.env.WHATSAPP_ASSISTANT_REAL_SEND = '1';
     const originalFetch = global.fetch;
-    // Scoped to this test's own recipient, same reason as the test above -
-    // an unrelated leftover queued entry must never be dragged into a
-    // permanent failure just because it happened to also be due.
     global.fetch = async (url, opts) => {
       if (String(url).includes('/sendMessage')) {
         const body = JSON.parse(opts.body);
         if (body.to_number !== whatsapp.normalizePhone(phone)) return { ok: true, json: async () => ({ success: true }) };
-        throw new Error('simulated permanent gateway failure');
+        throw new Error('simulated ongoing gateway outage');
       }
       return originalFetch(url, opts);
     };
     try {
+      await whatsappAssistant.scheduleAutoSend({ chatId: phone, isGroup: false, name: 'Sender', replyText: 'Test ongoing outage message', case: 'acknowledged', arrivedAt: Date.now() });
+      await forceAutosendDue(phone);
+      await whatsappAssistant.processDueAutoSends();
+      await forceAutosendDue(phone); // the first 60s-later retry - still fails, the gateway is still down
+      await whatsappAssistant.processDueAutoSends();
+      const log = await whatsappAssistant.listInboxLog(20);
+      const latestEntry = log.filter((e) => e.chatId === phone).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+      const redis = await getRawRedisClient();
+      let stillQueuedForThisPhone = false;
+      for (const id of (await redis.zrange('wa-pending-autosend-zset', 0, -1).catch(() => []))) {
+        const raw = await redis.get('wa-pending-autosend:' + id).catch(() => null);
+        const e = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+        if (e && e.chatId === phone) stillQueuedForThisPhone = true;
+      }
+      // Still send_failed (not yet not_delivered) AND still re-queued for
+      // another attempt - the exact opposite of the old give-up-after-one-
+      // retry behavior.
+      return Boolean(latestEntry) && latestEntry.outcome === 'send_failed' && stillQueuedForThisPhone;
+    } finally {
+      process.env.WHATSAPP_ASSISTANT_REAL_SEND = originalEnv;
+      global.fetch = originalFetch;
+    }
+  });
+  await checkAsync('a PERMANENT failure (malformed number - too few digits to ever be valid) is never retried at all, even once - retrying can\'t fix a number that will never become valid', async () => {
+    const phone = '12345'; // too short for ^\d{11,15}$ even after normalizePhone - the real client's own pre-flight validation fires before any network call at all
+    const originalEnv = process.env.WHATSAPP_ASSISTANT_REAL_SEND;
+    process.env.WHATSAPP_ASSISTANT_REAL_SEND = '1';
+    try {
       await whatsappAssistant.scheduleAutoSend({ chatId: phone, isGroup: false, name: 'Sender', replyText: 'Test permanent failure message', case: 'acknowledged', arrivedAt: Date.now() });
       await forceAutosendDue(phone);
       await whatsappAssistant.processDueAutoSends();
+      const log = await whatsappAssistant.listInboxLog(20);
+      const finalEntry = log.filter((e) => e.chatId === whatsapp.normalizePhone(phone)).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+      const notifications = await whatsappAssistant.listOwnerNotifications();
+      const alerted = notifications.some((n) => String(n.text || '').includes('Not delivered') && String(n.text || '').includes('Sender'));
+      const redis = await getRawRedisClient();
+      let anyForThisPhone = false;
+      for (const id of (await redis.zrange('wa-pending-autosend-zset', 0, -1).catch(() => []))) {
+        const raw = await redis.get('wa-pending-autosend:' + id).catch(() => null);
+        const e = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+        if (e && e.chatId === whatsapp.normalizePhone(phone)) anyForThisPhone = true;
+      }
+      return Boolean(finalEntry) && finalEntry.outcome === 'not_delivered' && alerted && !anyForThisPhone;
+    } finally {
+      process.env.WHATSAPP_ASSISTANT_REAL_SEND = originalEnv;
+    }
+  });
+  await checkAsync('once MAX_AUTOSEND_RETRY_COUNT is reached, retrying finally stops (a defensive cap, in case a bug somehow bypassed the normal 30-minute staleness cutoff) - marked not_delivered, no further retry queued', async () => {
+    const phone = '910000001010';
+    const originalEnv = process.env.WHATSAPP_ASSISTANT_REAL_SEND;
+    process.env.WHATSAPP_ASSISTANT_REAL_SEND = '1';
+    const originalFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('/sendMessage')) {
+        const body = JSON.parse(opts.body);
+        if (body.to_number !== whatsapp.normalizePhone(phone)) return { ok: true, json: async () => ({ success: true }) };
+        throw new Error('simulated ongoing gateway outage');
+      }
+      return originalFetch(url, opts);
+    };
+    try {
+      // Directly seeds an entry already AT the retry cap (never driven
+      // for real via 30 actual send attempts) - the cap logic itself is
+      // what's under test here, not the 30 real retries getting there.
+      await whatsappAssistant.scheduleAutoSend({ chatId: phone, isGroup: false, name: 'Sender', replyText: 'Test retry cap message', case: 'acknowledged', arrivedAt: Date.now(), retryCount: 30 });
       await forceAutosendDue(phone);
       await whatsappAssistant.processDueAutoSends();
       const log = await whatsappAssistant.listInboxLog(20);
       const finalEntry = log.filter((e) => e.chatId === phone).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
       const notifications = await whatsappAssistant.listOwnerNotifications();
-      const alerted = notifications.some((n) => String(n.text || '').includes('Not delivered') && String(n.text || '').includes('Sender'));
+      const alerted = notifications.some((n) => String(n.text || '').includes('Not delivered') && String(n.text || '').includes('30 retries'));
       const redis = await getRawRedisClient();
-      const stillQueued = (await redis.zrange('wa-pending-autosend-zset', 0, -1).catch(() => [])).length;
-      // A clean environment may have other chats' entries queued too - only
-      // check that NONE of them belong to this specific test phone.
       let anyForThisPhone = false;
       for (const id of (await redis.zrange('wa-pending-autosend-zset', 0, -1).catch(() => []))) {
         const raw = await redis.get('wa-pending-autosend:' + id).catch(() => null);
@@ -3121,6 +3177,16 @@ async function checkAsyncRealModel(label, fn) {
       process.env.WHATSAPP_ASSISTANT_REAL_SEND = originalEnv;
       global.fetch = originalFetch;
     }
+  });
+  await checkAsync('a retried entry that goes stale (30+ min since the ORIGINAL message arrived) converts to the SAME "missed while disconnected" reminder as everywhere else, instead of attempting yet another send - the real bound on how long retries can go on', async () => {
+    const phone = '910000001011';
+    await whatsappAssistant.sendOrReportAutoReply({
+      chatId: phone, isGroup: false, name: 'Stale Retry Test', replyText: 'should never be attempted',
+      case: 'acknowledged', arrivedAt: Date.now() - 31 * 60 * 1000, isRetry: true, retryCount: 2
+    });
+    const log = await whatsappAssistant.listInboxLog(20);
+    const entry = log.find((e) => e.chatId === whatsapp.normalizePhone(phone) && e.outcome === 'missed_while_disconnected');
+    return Boolean(entry);
   });
   await checkAsync('getWhatsappConversation: per-bubble delivery status survives a LATER, unrelated inbox-log entry for the same chat (found live: the conversation-level lastOutcome only reflects the MOST RECENT entry, hiding an earlier real send_failed the moment anything else - even a harmless skipped-duplicate - was logged afterward)', async () => {
     const phone = '910000001007';
@@ -3477,6 +3543,47 @@ async function checkAsyncRealModel(label, fn) {
     } finally {
       whatsapp.listMessages = originalListMessages;
       await cleanupCatchupFixtures(CATCHUP_MANUAL, CATCHUP_BURST, CATCHUP_STALE);
+    }
+  });
+  await checkAsync('Part A point 3, direct instruction - "confirm that after a gateway outage we catch up every missed message... with no duplicates": a REAL 3-hour gateway outage then recovery - a message near the start of the outage (well past the 30-min cutoff, correctly becomes a needs-you card) and one near the very end (fresh enough to auto-reply) both get found and answered/advanced exactly once, nothing lost, nothing duplicated', async () => {
+    const CATCHUP_3H_EARLY = '910000000894';
+    const CATCHUP_3H_LATE = '910000000895';
+    const now = Date.now();
+    await whatsappAssistant.setLastSeenId(CATCHUP_3H_EARLY, 500);
+    await whatsappAssistant.setLastSeenId(CATCHUP_3H_LATE, 600);
+    const originalListMessages = whatsapp.listMessages;
+    whatsapp.listMessages = async (contactId) => {
+      if (contactId === CATCHUP_3H_EARLY) {
+        // Arrived right near the START of the 3-hour outage - 2h50m ago,
+        // comfortably inside the 3-hour gap window but WAY past the
+        // 30-min no-auto-reply cutoff.
+        return [{ id: 501, direction: 'incoming', type: 'text', content: { text: 'Amar PF form ta kothay pabo?' }, created_at: new Date(now - 170 * 60000).toISOString() }];
+      }
+      if (contactId === CATCHUP_3H_LATE) {
+        // Arrived right near the END of the 3-hour outage, just before
+        // recovery - 5 minutes ago, fresh enough for a normal auto-reply.
+        return [{ id: 601, direction: 'incoming', type: 'text', content: { text: 'Office kobe khulbe?' }, created_at: new Date(now - 5 * 60000).toISOString() }];
+      }
+      return [];
+    };
+    try {
+      const result = await withCatchupHarness(3 * 60 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
+      const earlyAdvanced = (await whatsappAssistant.getLastSeenId(CATCHUP_3H_EARLY)) === 501;
+      const lateAdvanced = (await whatsappAssistant.getLastSeenId(CATCHUP_3H_LATE)) === 601;
+      const log = await whatsappAssistant.listInboxLog(20);
+      const earlyEntry = log.find((e) => e.chatId === CATCHUP_3H_EARLY && e.outcome === 'missed_while_disconnected');
+      // No duplicates - running catchUpAfterGap a SECOND time right away
+      // (simulating two overlapping recovery triggers, or a second
+      // process restart before the first catch-up's own effects were
+      // ever acted on) must find NOTHING new to do for either sender -
+      // the ids are already marked handled and the cursor already moved.
+      const secondRun = await whatsappAssistant.catchUpAfterGap('test');
+      return result.sendersAnswered === 1 && result.needsYouSenders === 1
+        && earlyAdvanced && lateAdvanced && Boolean(earlyEntry)
+        && secondRun.sendersAnswered === 0 && secondRun.needsYouSenders === 0;
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(CATCHUP_3H_EARLY, CATCHUP_3H_LATE);
     }
   });
   await checkAsync('a reply to a backlog whose oldest message is a 10-30 min delay (correction: exact wording, never under 10 min) opens with a short apology in the sender\'s own language, never mixed into the classified text itself', async () => {

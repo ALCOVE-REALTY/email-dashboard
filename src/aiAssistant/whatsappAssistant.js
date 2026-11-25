@@ -2114,6 +2114,19 @@ const LATENCY_ALERT_THRESHOLD_MS = 30 * 1000;
 // gateway hiccup that doesn't clear in 2s sometimes still clears within
 // under a minute.
 const RESEND_RETRY_DELAY_MS = 60 * 1000;
+// HARDENING (2026-11-25, direct instruction), Part A point 5 - "replies
+// and documents that fail because the gateway is down stay queued and
+// are sent automatically when it recovers... never dropped silently."
+// A defensive backstop only - the REAL bound in practice is the
+// arrivedAt staleness check at the very top of sendOrReportAutoReply:
+// every retried attempt re-enters through there first, so once
+// CATCHUP_STALE_THRESHOLD_MS (30 min) passes since the original message,
+// the next retry converts to the same "missed while disconnected"
+// reminder as everywhere else, never attempting another send past that
+// point. 30 retries at RESEND_RETRY_DELAY_MS apart is ~30 minutes - this
+// cap exists only so a bug that somehow bypassed the staleness check
+// could never retry forever.
+const MAX_AUTOSEND_RETRY_COUNT = 30;
 // LIVE INCIDENT (2026-11, direct instruction - "SUBH shows TWO replies
 // sent... but on the sender's phone only the greeting arrived") - the
 // gateway's own /sendMessage response reporting success is not, by
@@ -2862,29 +2875,42 @@ async function sendOrReportAutoReply(entry) {
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'sent' });
       await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
       if (!entry.isGroup) confirmOrRecoverSend({ chatId: entry.chatId, name: who, replyText: entry.replyText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
-    } else if (!entry.isRetry && !entry.isGroup) {
+    } else {
       // Delivery tracking (live incident, 917278793115: two sends were
       // logged as a failure with no further attempt and no clearly visible
       // "not delivered" status anywhere in the WhatsApp section itself,
-      // only a one-time owner notification that scrolled away) - one more
-      // attempt ~60s later, reusing the exact same delayed-send queue a
-      // fresh decision uses, before giving up for good. A brief gateway
-      // hiccup often clears within a minute; a genuinely broken send
-      // (bad number, gateway down) fails the same way both times and
-      // still ends up alerted below, just one retry later. Never for a
-      // group - that send always fails identically (not implemented yet),
-      // so a retry would only waste 60s before the same inevitable result.
-      await scheduleAutoSend(Object.assign({}, entry, { isRetry: true }), Date.now() + RESEND_RETRY_DELAY_MS);
-      await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'send_failed_retrying' });
-      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'send_failed', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt, gatewayError: sendResult.error || null });
-    } else {
-      // Either the retry above ALSO failed, or this was a group send
-      // (never retried, see above) - final either way, alerted, never
-      // retried again.
-      const retryNote = entry.isRetry ? ' even after a retry' : '';
-      await postOwnerNotification('⚠️ Could not deliver to ' + who + retryNote + ': ' + (sendResult.error || 'unknown error') + ' - shown as "Not delivered", please check/resend manually.');
-      await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'not_delivered' });
-      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'not_delivered', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt, gatewayError: sendResult.error || null });
+      // only a one-time owner notification that scrolled away) - retries
+      // at RESEND_RETRY_DELAY_MS apart, reusing the exact same delayed-
+      // send queue a fresh decision uses, before giving up for good.
+      // HARDENING (2026-11-25, direct instruction), Part A point 5 -
+      // originally just ONE retry (a brief gateway hiccup often clears
+      // within a minute); now keeps retrying, bounded by
+      // MAX_AUTOSEND_RETRY_COUNT (see its own comment - the arrivedAt
+      // staleness check this function starts with is the real bound in
+      // practice), so a real multi-minute gateway OUTAGE - not just a
+      // brief hiccup - still gets the reply out automatically the moment
+      // it recovers, same 30-minute no-auto-reply rule as everything
+      // else, never silently dropped. Never for a group (that send
+      // always fails identically, not implemented yet) or a permanent,
+      // not-retry-fixable failure (a malformed number can't become valid
+      // by waiting) - those still fail the same way every time, so
+      // retrying would only waste the full retry budget before the same
+      // inevitable result.
+      const retryCount = entry.retryCount || 0;
+      const isPermanentFailure = entry.isGroup || /valid WhatsApp number/i.test(sendResult.error || '');
+      if (!isPermanentFailure && retryCount < MAX_AUTOSEND_RETRY_COUNT) {
+        await scheduleAutoSend(Object.assign({}, entry, { isRetry: true, retryCount: retryCount + 1 }), Date.now() + RESEND_RETRY_DELAY_MS);
+        await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'send_failed_retrying' });
+        await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'send_failed', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt, gatewayError: sendResult.error || null });
+      } else {
+        // Either every retry was exhausted/a permanent failure, or this
+        // was a group send (never retried) - final either way, alerted,
+        // never retried again.
+        const retryNote = retryCount > 0 ? (' even after ' + retryCount + ' retr' + (retryCount === 1 ? 'y' : 'ies')) : '';
+        await postOwnerNotification('⚠️ Could not deliver to ' + who + retryNote + ': ' + (sendResult.error || 'unknown error') + ' - shown as "Not delivered", please check/resend manually.');
+        await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'not_delivered' });
+        await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'not_delivered', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt, gatewayError: sendResult.error || null });
+      }
     }
   } else {
     // DRAFT mode (spec point 8) - the full pipeline (decide, delay,
