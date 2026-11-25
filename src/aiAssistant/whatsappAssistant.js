@@ -4301,6 +4301,30 @@ async function upsertUnmatchedSenderNotice({ phone, name, message }) {
   } catch (err) { return null; }
   return flagDataAccessNotice({ phone, name, kind: 'unmatched_sender', fieldLabel: null, message, count: 1 });
 }
+// HR reports fix 4/5 (2026-11-24), direct instruction - "one request =
+// ONE Action-needed card" - a repeated restricted-field request from the
+// SAME phone for the SAME field used to create a fresh near-identical
+// card every time (confirmed live: two identical "Restricted field
+// request refused (UAN)" cards for the same person, 1 minute apart).
+// Same merge pattern as upsertUnmatchedSenderNotice above - matches on
+// phone AND fieldLabel (a DIFFERENT field from the same sender still
+// gets its own card, since that's genuinely a different request).
+async function upsertRestrictedFieldNotice({ phone, name, fieldLabel, message }) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const ids = (await redis.smembers(DATA_ACCESS_NOTICE_IDS_KEY)) || [];
+    for (const id of ids) {
+      const existing = await getDataAccessNotice(id);
+      if (existing && existing.kind === 'restricted_refused' && existing.phone === phone && existing.fieldLabel === fieldLabel) {
+        const updated = Object.assign({}, existing, { message, name: name || existing.name, count: (existing.count || 1) + 1, lastSeenAt: Date.now() });
+        await redis.set(DATA_ACCESS_NOTICE_PREFIX + id, JSON.stringify(updated));
+        return updated;
+      }
+    }
+  } catch (err) { return null; }
+  return flagDataAccessNotice({ phone, name, kind: 'restricted_refused', fieldLabel, message, count: 1 });
+}
 // Direct instruction (2026-11) - "once is enough": the fixed refusal
 // reply itself is sent at most once per unregistered number per IST
 // calendar day (the card above still updates every time regardless -
@@ -7188,7 +7212,7 @@ async function resolveSingleFieldForThirdParty({ phone, requesterLabel, candidat
   const tier = await resolveFieldAccessTier(dataAccessKey);
   const fieldLabelForNotice = isContactNumber ? (CONTACT_NUMBER_FIELD_WORD[lang] || CONTACT_NUMBER_FIELD_WORD.english) : (fieldAlias.label[lang] || fieldAlias.label.english);
   if (tier === 'restricted') {
-    await flagDataAccessNotice({ phone, name: candidate.name, kind: 'restricted_refused', fieldLabel: fieldLabelForNotice, message: requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + fieldLabelForNotice + ' (restricted field, Data access-e set kora) chaichhe - kakhono pathano hoy na, approval card o toiri hoyni.' });
+    await upsertRestrictedFieldNotice({ phone, name: candidate.name, fieldLabel: fieldLabelForNotice, message: requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + fieldLabelForNotice + ' (restricted field, Data access-e set kora) chaichhe - kakhono pathano hoy na, approval card o toiri hoyni.' });
     await postOwnerNotification('⛔ ' + requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + fieldLabelForNotice + ' chaichhe - restricted field (Data access-e set kora), refuse kora holo.');
     return { outcome: 'restricted' };
   }
@@ -7533,10 +7557,13 @@ async function resolveFieldSpecAccessTier(spec) {
 // below (a different scenario - the sender themselves isn't recognized
 // at all) - the exact Bangla given directly: "ei tottho shudhu HR office
 // theke dewa hoy."
+// HR reports fix 4/5 (2026-11-24), direct instruction - exact fixed
+// wording given verbatim for all 3 languages (replaces the earlier
+// wording this dict had).
 const RESTRICTED_FIELD_BLOCK_REPLY = {
-  banglish: 'Dukkhito, ei tottho shudhu HR office theke dewa hoy. Ei bishoye sahajyo lagle sorasori HR office-e jogajog korun.',
-  hinglish: 'Maaf kijiye, yeh jaankari sirf HR office se di jaati hai. Is baare mein madad chahiye to seedhe HR office se sampark karein.',
-  english: 'This information is only given out by the HR office directly. Please contact the HR office for any help with this.'
+  banglish: 'Dukkhito, onno karor gopon tottho (Aadhaar/PAN/bank/Salary/UAN/ESI) ami share korte parbo na. Ei bishoye apnar kono sahajjo lagle sorasori HR dept.-er sathe jogajog korun.',
+  hinglish: 'Maaf kijiye, main kisi aur ki gopniya jaankari (Aadhaar/PAN/bank/salary/UAN/ESI) share nahi kar sakta. Is bare mein madad chahiye toh seedhe HR dept. se sampark karein.',
+  english: "Sorry, I can't share someone else's confidential details (Aadhaar/PAN/bank/salary/UAN/ESI). If you need help with this, please contact the HR dept. directly."
 };
 // Task 2 (2026-10-31) - the OFFICIAL tier's sender gate: a direct (no
 // approval) reply for one of the 15 official fields is only ever allowed
@@ -7812,7 +7839,7 @@ async function resolveCombinedPersonFields({ phone, requesterLabel, candidate, f
   // one.
   const tiers = await Promise.all(fieldSpecs.map(resolveFieldSpecAccessTier));
   if (tiers.some((t) => t === 'restricted')) {
-    await flagDataAccessNotice({ phone, name: candidate.name, kind: 'restricted_refused', fieldLabel: labelsJoined, message: requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + labelsJoined + ' (restricted field shomoy) chaichhe - eta kakhono pathano hoy na, approval card o toiri hoyni.' });
+    await upsertRestrictedFieldNotice({ phone, name: candidate.name, fieldLabel: labelsJoined, message: requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + labelsJoined + ' (restricted field shomoy) chaichhe - eta kakhono pathano hoy na, approval card o toiri hoyni.' });
     await postOwnerNotification('⛔ ' + requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + labelsJoined + ' chaichhe - ei request-e restricted field royeche, tai pura request-i refuse kora holo, kichu pathano hoyni.');
     return { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang };
   }
@@ -7910,7 +7937,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // gate runs before any name resolution. Surfaced as a real
     // Action-needed card now (direct instruction), not just a chat
     // notification.
-    await flagDataAccessNotice({ phone, name: personName || null, kind: 'restricted_refused', fieldLabel: fieldSpecs.map((s) => s.rawLabel || 'field').join(' ar '), message: name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er restricted personal data (Aadhaar/PAN/bank/salary/UAN/ESI) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni, approval card o toiri hoyni.' });
+    await upsertRestrictedFieldNotice({ phone, name: personName || null, fieldLabel: fieldSpecs.map((s) => s.rawLabel || 'field').join(' ar '), message: name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er restricted personal data (Aadhaar/PAN/bank/salary/UAN/ESI) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni, approval card o toiri hoyni.' });
     await postOwnerNotification('⛔ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er restricted personal data (Aadhaar/PAN/bank/salary/UAN/ESI type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
     return { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang };
   }
@@ -17842,6 +17869,7 @@ module.exports = {
   isSenderKnownEmployee,
   findSenderAwaitingManagerConfirmation,
   upsertUnmatchedSenderNotice,
+  upsertRestrictedFieldNotice,
   hasUnregisteredRefusalBeenSentToday,
   markUnregisteredRefusalSentToday,
   clearUnregisteredRefusalSentToday,

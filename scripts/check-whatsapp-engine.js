@@ -573,13 +573,13 @@ async function checkAsyncRealModel(label, fn) {
       const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text: 'Ayan Das er Aadhaar number ta dao', isGroup: false, history: [] });
       const approvals = await whatsappAssistant.listPendingApprovals();
       const anyCreated = approvals.some((a) => a.sensitiveIdRequest && a.phone === OWN_ID_REAL_PHONE);
-      return decision.case === 'acknowledged' && decision.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+      return decision.case === 'acknowledged' && decision.replyText.includes('onno karor gopon tottho') && !anyCreated;
     });
     await checkAsync('someone ELSE\'s Aadhaar (same sender, different name) is refused - no approval, Restricted-tier block unchanged', async () => {
       const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text: 'Ayan Das er Aadhaar number ta dao', isGroup: false, history: [] });
       const approvals = await whatsappAssistant.listPendingApprovals();
       const anyCreated = approvals.some((a) => a.sensitiveIdRequest && a.phone === OWN_ID_REAL_PHONE);
-      return decision.case === 'acknowledged' && decision.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+      return decision.case === 'acknowledged' && decision.replyText.includes('onno karor gopon tottho') && !anyCreated;
     });
     const OWN_ID_UNREGISTERED_PHONE = '910000000798';
     await checkAsync('own Aadhaar from an UNREGISTERED number is refused - the phone-match gate is the real authorization, never the text alone', async () => {
@@ -1041,11 +1041,11 @@ async function checkAsyncRealModel(label, fn) {
   });
   await checkAsync('a mislabeled "other_field" request whose label actually says "bank account number" is STILL hard-blocked, regardless of personField - a structural safety net, never trusting the classifier alone', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'bank account number', department: null, text: 'Ayan Das er bank account number dao', history: [] });
-    return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy');
+    return d.case === 'acknowledged' && d.replyText.includes('onno karor gopon tottho');
   });
   await checkAsync('an "other_field" request with a genuinely unrecognized label (e.g. "passport number") is refused the same safe way - never an arbitrary unvalidated field lookup', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'english', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'passport number', department: null, text: 'what is Ayan Das passport number', history: [] });
-    return d.case === 'acknowledged' && d.replyText.includes('only given out by the HR office directly');
+    return d.case === 'acknowledged' && d.replyText.includes("can't share someone else's confidential details");
   });
   await checkAsync('"Ayan Das mail id dao" (single exact match, other_field) creates ONE normal approval naming the field and the person, with the real email visible to the owner only', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'mail id', department: null, text: 'Ayan Das mail id dao', history: [] });
@@ -1062,9 +1062,9 @@ async function checkAsyncRealModel(label, fn) {
     await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE).catch(() => {});
     return ok;
   });
-  await checkAsync('RESTRICTED_FIELD_BLOCK_REPLY (Part A phase 2 - direct instruction wording, deliberately field-agnostic now) points to the HR office, in all 3 languages', async () => {
+  await checkAsync('RESTRICTED_FIELD_BLOCK_REPLY, direct instruction (2026-11-24) - the exact fixed wording given verbatim, in all 3 languages', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'hinglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das ka Aadhaar number batao', history: [] });
-    return d.case === 'acknowledged' && d.replyText.includes('HR office se sampark karein');
+    return d.case === 'acknowledged' && d.replyText.includes('seedhe HR dept. se sampark karein');
   });
 
   console.log('='.repeat(70));
@@ -1092,7 +1092,7 @@ async function checkAsyncRealModel(label, fn) {
   await checkAsync('LOCKED: someone else\'s PAN -> refused, no card, regardless of an employee-code-shaped word anywhere nearby', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das er PAN number ta dao', history: [] });
     const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
-    return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+    return d.case === 'acknowledged' && d.replyText.includes('onno karor gopon tottho') && !anyCreated;
   });
   await checkAsync('LOCKED: someone else\'s contact number -> unaffected regression check, still a normal approval card', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'contact_number', department: null, text: 'Ayan Das er contact number ta dao', history: [] });
@@ -1104,7 +1104,7 @@ async function checkAsyncRealModel(label, fn) {
   await checkAsync('an employee-code-shaped word combined with a genuinely forbidden head in the SAME message (e.g. also asking for salary) is still fully hard-blocked - the override only ever fires when NOTHING forbidden is also present', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das er employee code ar salary dujonto dao', history: [] });
     const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
-    return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+    return d.case === 'acknowledged' && d.replyText.includes('onno karor gopon tottho') && !anyCreated;
   });
 
   console.log('='.repeat(70));
@@ -1175,6 +1175,27 @@ async function checkAsyncRealModel(label, fn) {
     if (!n) return false;
     await whatsappAssistant.dismissDataAccessNotice(n.id);
     return !(await whatsappAssistant.listDataAccessNotices()).some((x) => x.id === n.id);
+  });
+  const RESTRICTED_NOTICE_PHONE = '910000000959';
+  await checkAsync('HR reports fix 4/5 (2026-11-24), direct instruction - upsertRestrictedFieldNotice: the FIRST restricted-field request creates one card with count 1', async () => {
+    const n = await whatsappAssistant.upsertRestrictedFieldNotice({ phone: RESTRICTED_NOTICE_PHONE, name: 'Sagar Das', fieldLabel: 'UAN', message: 'first UAN request' });
+    return Boolean(n) && n.count === 1 && n.kind === 'restricted_refused' && n.fieldLabel === 'UAN';
+  });
+  await checkAsync('LIVE INCIDENT (2026-11-24), direct instruction - a SECOND restricted-field request for the SAME person+field (the exact "two identical UAN cards 1 min apart" bug) merges into the SAME card, never a duplicate', async () => {
+    const first = (await whatsappAssistant.listDataAccessNotices()).find((n) => n.kind === 'restricted_refused' && n.phone === RESTRICTED_NOTICE_PHONE && n.fieldLabel === 'UAN');
+    const n2 = await whatsappAssistant.upsertRestrictedFieldNotice({ phone: RESTRICTED_NOTICE_PHONE, name: 'Sagar Das', fieldLabel: 'UAN', message: 'second UAN request' });
+    const allForPhone = (await whatsappAssistant.listDataAccessNotices()).filter((n) => n.kind === 'restricted_refused' && n.phone === RESTRICTED_NOTICE_PHONE && n.fieldLabel === 'UAN');
+    return n2.id === first.id && n2.count === 2 && n2.message === 'second UAN request' && allForPhone.length === 1;
+  });
+  await checkAsync('a DIFFERENT restricted field from the SAME phone gets its OWN separate card - the merge is scoped to phone+field together, never just phone', async () => {
+    const n = await whatsappAssistant.upsertRestrictedFieldNotice({ phone: RESTRICTED_NOTICE_PHONE, name: 'Sagar Das', fieldLabel: 'PAN', message: 'a PAN request, different field' });
+    const allForPhone = (await whatsappAssistant.listDataAccessNotices()).filter((n) => n.kind === 'restricted_refused' && n.phone === RESTRICTED_NOTICE_PHONE);
+    return allForPhone.length === 2 && n.count === 1 && n.fieldLabel === 'PAN';
+  });
+  await checkAsync('cleanup: both merged restricted-field notices can be dismissed', async () => {
+    const all = (await whatsappAssistant.listDataAccessNotices()).filter((n) => n.kind === 'restricted_refused' && n.phone === RESTRICTED_NOTICE_PHONE);
+    for (const n of all) await whatsappAssistant.dismissDataAccessNotice(n.id);
+    return !(await whatsappAssistant.listDataAccessNotices()).some((x) => x.phone === RESTRICTED_NOTICE_PHONE && x.kind === 'restricted_refused');
   });
   const DEDUP_PHONE = '910000000957';
   await checkAsync('hasUnregisteredRefusalBeenSentToday: false before any refusal was ever marked sent for this number/day', async () => {
@@ -1281,18 +1302,31 @@ async function checkAsyncRealModel(label, fn) {
       await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
       const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: dobEmp.name, personField: 'forbidden_pii', personFieldLabel: undefined, department: null, text: dobEmp.name + '-er Aadhaar number ta dao', history: [] });
       const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === dobEmp.name);
-      return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+      return d.case === 'acknowledged' && d.replyText.includes('onno karor gopon tottho') && !anyCreated;
     });
   })();
 
   console.log('Restricted tier (Aadhaar/PAN/UAN/ESIC/bank/salary) - never sent about someone else, not even via an approval card, with a real Action-needed card now (not just a chat notification)');
   await checkAsync('LOCK SCENARIO: someone else\'s Aadhaar -> refused + a real data-access-notice card created (not just a chat notification), no approval record anywhere', async () => {
+    // HR reports fix 4/5 (2026-11-24), direct instruction - a repeated
+    // restricted-field request for the same phone+field now correctly
+    // MERGES into one card (upsertRestrictedFieldNotice) rather than
+    // creating a fresh one every time - an EARLIER test in this same file
+    // already exercises this exact phone+field combo ("Ayan Das er
+    // Aadhaar", LIVE_REVIEW_TEST_PHONE), so without this cleanup this
+    // test would correctly merge into THAT notice instead of creating a
+    // new one, breaking its own "a new notice appears" assumption. Clean
+    // slate first, for test isolation, same as any other shared-fixture
+    // cleanup in this file.
+    for (const n of await whatsappAssistant.listDataAccessNotices()) {
+      if (n.kind === 'restricted_refused' && n.phone === LIVE_REVIEW_TEST_PHONE) await whatsappAssistant.dismissDataAccessNotice(n.id);
+    }
     const before = await whatsappAssistant.listDataAccessNotices();
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das er Aadhaar number ta dao', history: [] });
     const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
     const after = await whatsappAssistant.listDataAccessNotices();
     const newNotice = after.find((n) => !before.some((b) => b.id === n.id));
-    const ok = d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated && Boolean(newNotice) && newNotice.kind === 'restricted_refused';
+    const ok = d.case === 'acknowledged' && d.replyText.includes('onno karor gopon tottho') && !anyCreated && Boolean(newNotice) && newNotice.kind === 'restricted_refused';
     if (newNotice) await whatsappAssistant.dismissDataAccessNotice(newNotice.id);
     return ok;
   });
@@ -1331,7 +1365,7 @@ async function checkAsyncRealModel(label, fn) {
       const anyCreated = (await listRawApprovalsForPhone(ACTIVE_SENDER_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
       const notices = await whatsappAssistant.listDataAccessNotices();
       const newNotice = notices.find((n) => n.phone === ACTIVE_SENDER_PHONE || (n.message && n.message.includes('Ayan Das')));
-      const ok = d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+      const ok = d.case === 'acknowledged' && d.replyText.includes('onno karor gopon tottho') && !anyCreated;
       if (newNotice) await whatsappAssistant.dismissDataAccessNotice(newNotice.id).catch(() => {});
       return ok;
     } finally {
@@ -1347,7 +1381,7 @@ async function checkAsyncRealModel(label, fn) {
         department: null, text: 'Ayan Das er employee code ar company dao', history: []
       });
       const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
-      return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+      return d.case === 'acknowledged' && d.replyText.includes('onno karor gopon tottho') && !anyCreated;
     } finally {
       await dataAccessService.setHeadTier('company', 'official');
     }
@@ -1422,7 +1456,7 @@ async function checkAsyncRealModel(label, fn) {
       department: null, text: 'Ayan Das er contact no ar salary koto', history: []
     });
     const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
-    return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+    return d.case === 'acknowledged' && d.replyText.includes('onno karor gopon tottho') && !anyCreated;
   });
 
   console.log('='.repeat(70));

@@ -6261,8 +6261,11 @@
     // number are merged server-side (upsertUnmatchedSenderNotice) into
     // this one record's own growing count/message, rather than a new
     // card per message - shown here as a small "× N" badge, latest
-    // message text already in item.data.message.
-    const repeatBadge = (isUnmatched && item.data.count > 1) ? ' <span class="wi-count-badge neutral">× ' + Number(item.data.count) + '</span>' : '';
+    // message text already in item.data.message. HR reports fix 4/5
+    // (2026-11-24), direct instruction - the SAME merge now also applies
+    // to a repeated restricted-field request for the same person+field
+    // (upsertRestrictedFieldNotice) - same badge, same reasoning.
+    const repeatBadge = item.data.count > 1 ? ' <span class="wi-count-badge neutral">× ' + Number(item.data.count) + '</span>' : '';
     return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '" data-data-access-notice-id="' + escapeHtml(item.data.id) + '">' +
       '<div class="wf-action-needed-card-head">' +
         '<span class="wf-auto-task-subject">' + escapeHtml(senderDisplay(item.name, item.chatId)) + repeatBadge + '</span>' +
