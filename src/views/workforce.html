@@ -2125,6 +2125,15 @@
         <div class="wf-panel-head"><h3>Duplicate Employee IDs</h3></div>
         <ul class="wf-bar-list" id="duplicatesList"></ul>
       </div>
+      <!-- UI fix (2026-11), direct instruction, item 4 - owner-only (the
+           route omits spellingVariants entirely for anyone else, so this
+           panel simply never gets data to show). Same hidden-until-real-
+           data convention as duplicatesPanel above. -->
+      <div class="wf-panel" id="spellingVariantsPanel" hidden data-wi-enter="block">
+        <div class="wf-panel-head"><h3>Spelling Variants</h3></div>
+        <p class="wf-note">Same real value, spelled more than one way in the sheet - clean these up so filters/reports never split one value into two.</p>
+        <div id="spellingVariantsList"></div>
+      </div>
     </section>
 
     <!-- Department Wise Headcount (full list, Active only) -->

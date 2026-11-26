@@ -8118,6 +8118,27 @@ async function loadQualityView() {
     } else {
       dupPanel.hidden = true;
     }
+
+    // UI fix (2026-11), direct instruction, item 4 - owner-only (the
+    // route itself omits this field entirely for anyone else, so
+    // data.spellingVariants is simply undefined there - same hidden
+    // treatment as a genuinely empty report).
+    const variantsPanel = document.getElementById('spellingVariantsPanel');
+    if (data.spellingVariants && data.spellingVariants.length) {
+      variantsPanel.hidden = false;
+      document.getElementById('spellingVariantsList').innerHTML = data.spellingVariants.map((f) =>
+        '<div class="wf-panel-head"><h3 style="font-size:.85rem">' + escapeHtml(f.label) + '</h3></div>' +
+        '<ul class="wf-bar-list">' +
+          f.groups.map((g) =>
+            '<li><span class="wf-bar-main"><span class="wf-bar-name">' +
+              g.map((v) => escapeHtml(v.value) + ' (' + v.count + ')').join(' / ') +
+            '</span></span></li>'
+          ).join('') +
+        '</ul>'
+      ).join('');
+    } else {
+      variantsPanel.hidden = true;
+    }
   } catch (err) {
     completenessEl.innerHTML = '<div class="error-banner">' + escapeHtml(err.message) + '</div>';
   }
