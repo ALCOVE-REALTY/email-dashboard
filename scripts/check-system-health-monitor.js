@@ -67,6 +67,43 @@ async function main() {
       await new Promise((resolve) => failServer.close(resolve));
     }
   });
+  await checkAsync('HARDENING (2026-11-25, direct instruction), Part B item 4c - "retry transient fetch failures before alerting": a server that fails ONCE then recovers (simulating a one-off network blip, not a real outage) reports ok:true after the retry, never alarms on it', async () => {
+    const http = require('http');
+    const { startFakeUpstashServer } = require('./fakeUpstashServer');
+    // A real, protocol-correct fake Upstash server (same one every other
+    // test in this whole suite already trusts) sits BEHIND a thin
+    // failing proxy that fails only the very first real request, then
+    // forwards every other request through completely unchanged - no
+    // need to re-implement the client's own wire protocol (confirmed by
+    // direct inspection to auto-pipeline every command, even a lone one,
+    // as a POST /pipeline whose body/response shape is non-trivial) just
+    // to inject one transient failure.
+    const fake = await startFakeUpstashServer();
+    let requestCount = 0;
+    const proxy = http.createServer((req, res) => {
+      requestCount++;
+      if (requestCount <= 1) { res.writeHead(500); res.end('simulated transient blip'); return; }
+      const upstream = http.request(fake.url + req.url, { method: req.method, headers: req.headers }, (upstreamRes) => {
+        res.writeHead(upstreamRes.statusCode, upstreamRes.headers);
+        upstreamRes.pipe(res);
+      });
+      req.pipe(upstream);
+    });
+    await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+    const saved = {};
+    REDIS_ENV_VARS.forEach((k) => { saved[k] = process.env[k]; delete process.env[k]; });
+    process.env.KV_REST_API_URL = 'http://127.0.0.1:' + proxy.address().port;
+    process.env.KV_REST_API_TOKEN = fake.token;
+    try {
+      const monitor = freshMonitor();
+      const result = await monitor.checkKv();
+      return result.ok === true && /recovered on retry/.test(result.note || '');
+    } finally {
+      REDIS_ENV_VARS.forEach((k) => { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; });
+      await new Promise((resolve) => proxy.close(resolve));
+      await fake.close();
+    }
+  });
 
   console.log('='.repeat(70));
   console.log('checkGateway - never assumes one exact field name, only fails on an EXPLICIT "disconnected"');

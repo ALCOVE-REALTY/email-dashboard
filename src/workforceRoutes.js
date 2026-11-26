@@ -3270,7 +3270,14 @@ router.get('/hr-assistant/system-health', async (req, res) => {
     webhookUrl: webhookRegistration ? webhookRegistration.url : null,
     diagnostics: gatewayV1Diagnostics
   };
-  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, recentShutdowns, recentPollSkips, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats(), gatewayV1: gatewayV1Info, webhookDeadLetters });
+  // HARDENING (2026-11-25, direct instruction), Part B item 4c - "count
+  // our KV commands per minute and measure latency per command type."
+  // Pure in-memory read (kvInstrumentation.js's own rolling stats,
+  // already being filled by real traffic as it happens) - same "viewing
+  // the card never adds load" rule as everything else on this route.
+  let kvCommandStats = [];
+  try { kvCommandStats = require('./kvInstrumentation').getKvCommandStats(); } catch (err) { kvCommandStats = []; }
+  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, recentShutdowns, recentPollSkips, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats(), gatewayV1: gatewayV1Info, webhookDeadLetters, kvCommandStats });
 });
 // HARDENING (2026-11-24), direct instruction, point 1 - manual retry for
 // one dead-letter entry (identified by its position in the list the GET

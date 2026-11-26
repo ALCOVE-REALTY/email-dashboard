@@ -38,6 +38,7 @@ const whatsapp = require('../whatsappService');
 const gmailService = require('../gmailService');
 const employeeService = require('../employeeService');
 const { Redis } = require('@upstash/redis');
+const { wrapRedisClient, getKvCommandStats } = require('../kvInstrumentation');
 // New WhatsApp gateway (2026-11, direct instruction, Commit 3/5) -
 // session health (decryption failures, duplicates suppressed) is a true
 // no-op below until WHATSAPP_GATEWAY=new. Webhook registration status is
@@ -140,23 +141,43 @@ function getRawRedisClient() {
   const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || null;
   const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || null;
   if (!url || !token) return null;
-  return new Redis({ url, token });
+  return wrapRedisClient(new Redis({ url, token }));
 }
 
 const KV_PING_KEY = 'subh-health-check-ping';
+// HARDENING (2026-11-25, direct instruction), Part B item 4c - "retry
+// transient fetch failures before alerting." Before this, ANY thrown
+// error (including a bare transient "fetch failed" network blip, not
+// just redisHealth.js's own separate isTransientParseError case for a
+// different client path) alerted on the very first failure. One retry,
+// after a short pause, before actually reporting ok:false - a genuine
+// outage still fails (both attempts throw); a one-off network hiccup no
+// longer alarms on its own.
+async function pingKvOnce() {
+  const redis = getRawRedisClient();
+  const value = 'ping-' + Date.now();
+  await withTimeout(redis.set(KV_PING_KEY, value), HEALTH_CHECK_TIMEOUT_MS);
+  const readBack = await withTimeout(redis.get(KV_PING_KEY), HEALTH_CHECK_TIMEOUT_MS);
+  if (readBack !== value) throw new Error('wrote a value and read back something else - store is reachable but not behaving correctly');
+}
+const KV_PING_RETRY_DELAY_MS = 300;
 async function checkKv() {
   const redis = getRawRedisClient();
   if (!redis) return { ok: false, error: 'KV_REST_API_URL/KV_REST_API_TOKEN (or UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN) not configured' };
   const startedAt = Date.now();
   try {
-    const value = 'ping-' + Date.now();
-    await withTimeout(redis.set(KV_PING_KEY, value), HEALTH_CHECK_TIMEOUT_MS);
-    const readBack = await withTimeout(redis.get(KV_PING_KEY), HEALTH_CHECK_TIMEOUT_MS);
+    await pingKvOnce();
     recordKvLatency(Date.now() - startedAt);
-    if (readBack !== value) return { ok: false, error: 'wrote a value and read back something else - store is reachable but not behaving correctly' };
     return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
+  } catch (firstErr) {
+    await new Promise((resolve) => setTimeout(resolve, KV_PING_RETRY_DELAY_MS));
+    try {
+      await pingKvOnce();
+      recordKvLatency(Date.now() - startedAt);
+      return { ok: true, note: 'recovered on retry (first attempt: ' + firstErr.message + ')' };
+    } catch (secondErr) {
+      return { ok: false, error: secondErr.message };
+    }
   }
 }
 

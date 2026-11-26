@@ -304,6 +304,7 @@
   const healthProcessLineEl = document.getElementById('hrHealthProcessLine');
   const healthRecentShutdownsEl = document.getElementById('hrHealthRecentShutdowns');
   const healthPollSkipsEl = document.getElementById('hrHealthPollSkips');
+  const healthKvCommandsEl = document.getElementById('hrHealthKvCommands');
   const jobHeartbeatsList = document.getElementById('hrJobHeartbeatsList');
   const healthWaV1El = document.getElementById('hrHealthWaV1');
   const healthWaV1StatusEl = document.getElementById('hrHealthWaV1Status');
@@ -5784,6 +5785,14 @@
     const lines = recentPollSkips.map((s) => ageLabelOrDash(s.at) + ' — ' + s.contact + ' — ' + s.reason + (s.detail ? ' (' + s.detail + ')' : ''));
     healthPollSkipsEl.textContent = 'Recent skipped incoming messages:\n' + lines.join('\n');
   }
+  // HARDENING (2026-11-25, direct instruction), Part B item 4c - "count
+  // our KV commands per minute and measure latency per command type."
+  function renderKvCommandStats(kvCommandStats) {
+    if (!healthKvCommandsEl) return;
+    if (!kvCommandStats || !kvCommandStats.length) { healthKvCommandsEl.textContent = ''; return; }
+    const lines = kvCommandStats.map((s) => s.command.toUpperCase() + ': ' + s.callsLast5Min + '/5min, p50 ' + msLabel(s.p50Ms) + ', p95 ' + msLabel(s.p95Ms));
+    healthKvCommandsEl.textContent = 'KV commands (this process):\n' + lines.join('\n');
+  }
   // New WhatsApp gateway (2026-11, direct instruction, Commit 3; extended
   // 2026-11-23, LIVE INCIDENT, direct instruction - "Gateway diagnostics"
   // block). Shown whenever there is ANY sign the new gateway is
@@ -5836,6 +5845,7 @@
       try { renderProcessStart(data && data.processStart); } catch (err) { /* independent of the rest */ }
       try { renderRecentShutdowns(data && data.recentShutdowns); } catch (err) { /* independent of the rest */ }
       try { renderRecentPollSkips(data && data.recentPollSkips); } catch (err) { /* independent of the rest */ }
+      try { renderKvCommandStats(data && data.kvCommandStats); } catch (err) { /* independent of the rest */ }
       try { renderJobHeartbeatsList(data && data.jobHeartbeats); } catch (err) { /* independent of the rest */ }
       // LIVE INCIDENT (2026-11-23) - moved AFTER the core metrics render
       // below (was before) and wrapped here too, on top of its own

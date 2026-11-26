@@ -72,6 +72,7 @@ const DETERMINISTIC_SUITES = [
   'check-whatsapp-document-send.js',
   'check-hr-report-service.js',
   'check-redis-health.js',
+  'check-kv-instrumentation.js',
   'check-hr-login.js',
   'check-system-health-monitor.js',
   'check-company-details.js',

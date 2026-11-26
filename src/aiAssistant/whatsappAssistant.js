@@ -15,6 +15,7 @@
 // a harmless no-op/empty-result rather than throwing when Redis isn't
 // configured or unreachable.
 const { Redis } = require('@upstash/redis');
+const { wrapRedisClient } = require('../kvInstrumentation');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -250,7 +251,10 @@ function getClient() {
   clientChecked = true;
   const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || null;
   const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || null;
-  client = url && token ? new Redis({ url, token }) : null;
+  // HARDENING (2026-11-25, direct instruction), Part B item 4c - this
+  // app's single highest-traffic KV client (see kvInstrumentation.js's
+  // own header for why this one specifically).
+  client = url && token ? wrapRedisClient(new Redis({ url, token })) : null;
   return client;
 }
 function isAvailable() { return Boolean(getClient()); }

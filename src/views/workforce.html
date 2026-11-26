@@ -3514,6 +3514,11 @@
              skipped incoming message, the reason (masked number + reason)
              so it's visible on the System health card." -->
         <div class="wf-auto-hint" id="hrHealthPollSkips" style="padding:0 4px 12px; white-space:pre-line"></div>
+        <!-- HARDENING (2026-11-25, direct instruction), Part B item 4c -
+             "count our KV commands per minute and measure latency per
+             command type" - per real command, calls in the last 5 min
+             and p50/p95 latency, busiest first. -->
+        <div class="wf-auto-hint" id="hrHealthKvCommands" style="padding:0 4px 12px; white-space:pre-line"></div>
         <!-- New WhatsApp gateway session health (2026-11, direct instruction,
              Commit 3) - hidden entirely while WHATSAPP_GATEWAY isn't "new"
              (gatewayV1.session comes back null), so this adds nothing to the
@@ -4113,7 +4118,7 @@
        BEFORE hrAssistant.js so window.wfMediatorGuard is ready by the time
        hrAssistant.js's own setup code runs. See public/wfMediatorGuard.js. -->
   <script src="wfMediatorGuard.js?v=1"></script>
-  <script src="hrAssistant.js?v=8"></script>
+  <script src="hrAssistant.js?v=9"></script>
   <script src="workforce-ui-enhance.js?v=1"></script>
   <script src="js/wi-motion.js?v=3"></script>
 </body>
