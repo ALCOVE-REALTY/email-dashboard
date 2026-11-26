@@ -189,6 +189,27 @@ async function main() {
       name: 'fix 3/5 - a routine Banglish count request still extracts language:"banglish" (no regression from the language-consistency fix)',
       text: 'Amar company te koto jon Active ache?',
       check: (r) => r && r.matchesReportIntent === true && r.language === 'banglish'
+    },
+    // LIVE BUG FIX (2026-11), direct instruction - the user's own exact
+    // reported phrase ("The curve HO staff list dao" -> the ambiguous-
+    // option-merging bug, now fixed deterministically). The ONLY part of
+    // this fix that depends on the real model is whether it still
+    // correctly extracts "The Curve" as a placeHints entry from this
+    // phrasing - everything downstream (classifyPlaceHint's own
+    // normalizeKey merging, the numbered-options question, parsing a
+    // "both"/"same"/digit reply, the one-retry-then-fallback behaviour)
+    // is deterministic code, already covered at zero cost by
+    // check-hr-report-service.js's "a genuine remaining ambiguity..."
+    // suite via the deps.extract test seam - this is deliberately the
+    // ONE new real-model scenario for this fix, not a model-dependent
+    // test of the answer-parsing itself (there is no model call in that
+    // path to test). Brand new extraction surface for this exact
+    // phrasing shape - run 3x (direct instruction, newly locked).
+    {
+      name: 'LIVE BUG, exact phrasing - "The curve HO staff list dao" extracts "The Curve" as a placeHints entry (feeds the normalizeKey-merging fix; HO is also expected, either as a placeHints entry or a locations entry)',
+      text: 'The curve HO staff list dao',
+      runs: 3,
+      check: (r) => r && r.matchesReportIntent === true && Array.isArray(r.placeHints) && r.placeHints.some((h) => has(h, 'curve'))
     }
   ].filter((s) => !filter || s.name.toLowerCase().includes(filter.toLowerCase()));
 

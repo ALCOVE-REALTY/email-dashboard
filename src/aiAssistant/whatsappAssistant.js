@@ -5356,13 +5356,21 @@ const HR_QUERY_HOD_SINGLE_WITH_CODE_AND_CONTACT = {
 // ACTIVE record (the same precedence computeHodBreakdown's own candidate
 // pool already favors) but falling back to any match so an inactive HOD
 // still resolves - never invents a code when no match exists.
+// LIVE BUG FIX (2026-11), direct instruction - `name` here is the HOD's
+// name as it appears in OTHER employees' "Reporting Manager" column,
+// which can be spelled with different case/spacing than the HOD's own
+// "Name" column on their own row - a raw `===` could miss the match
+// entirely. Compared via normalizeKey (same helper as every other
+// people/HR-value comparison in this codebase), never the raw strings.
 function findEmployeeIdByExactName(employees, name) {
-  const match = employees.find((e) => e.name === name && e.status === 'ACTIVE') || employees.find((e) => e.name === name);
+  const key = employeeService.normalizeKey(name);
+  const match = employees.find((e) => employeeService.normalizeKey(e.name) === key && e.status === 'ACTIVE') || employees.find((e) => employeeService.normalizeKey(e.name) === key);
   return match ? match.employeeId : null;
 }
 // Same lookup, for the HOD's own contact number (Task 6).
 function findEmployeeContactByExactName(employees, name) {
-  const match = employees.find((e) => e.name === name && e.status === 'ACTIVE') || employees.find((e) => e.name === name);
+  const key = employeeService.normalizeKey(name);
+  const match = employees.find((e) => employeeService.normalizeKey(e.name) === key && e.status === 'ACTIVE') || employees.find((e) => employeeService.normalizeKey(e.name) === key);
   return match ? match.contactNumber : null;
 }
 // The single-HOD answer line (plain name, +emp code, +contact, or both) -

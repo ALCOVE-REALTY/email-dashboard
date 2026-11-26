@@ -19,6 +19,8 @@
 // goes through THIS engine instead; anything this engine doesn't
 // recognize (matchesReportIntent: false) falls through to the old engine
 // exactly as before.
+const employeeService = require('../employeeService');
+const { normalizeKey, buildDisplayNames } = employeeService;
 const dataAccessService = require('./dataAccessService');
 const companyDetailsService = require('./companyDetailsService');
 const workforceAnalytics = require('../workforceAnalytics');
@@ -232,6 +234,17 @@ function matchesSubstring(value, hint) {
   if (!value) return false;
   return String(value).toLowerCase().includes(String(hint).toLowerCase());
 }
+// LIVE BUG FIX (2026-11), direct instruction - a resolved filter value
+// (an alias resolution, or classifyPlaceHint's own canonical display
+// name) must still match every row for that real value, even one spelled
+// with a different case/punctuation in the raw sheet - a plain
+// `list.includes(e.field)` would miss those rows. Compares via
+// normalizeKey on both sides, never the raw strings.
+function includesNormalized(list, value) {
+  if (!list || !list.length || !value) return false;
+  const key = normalizeKey(value);
+  return list.some((v) => normalizeKey(v) === key);
+}
 // Lazily required - whatsappAssistant.js requires this file too (to
 // dispatch into it), so a top-level require here would be circular.
 function getWhatsappAssistant() { return require('./whatsappAssistant'); }
@@ -306,7 +319,25 @@ async function classifyPlaceHint(hint, employees) {
   const aliasLoc = (typeof wa.resolveSiteAliasValues === 'function') ? wa.resolveSiteAliasValues(hint) : [];
   const aliasCompLoc = (typeof wa.resolveCompanyLocationAliasValues === 'function') ? wa.resolveCompanyLocationAliasValues(hint) : [];
   const aliasDept = (typeof wa.resolveDeptAliasValues === 'function') ? wa.resolveDeptAliasValues(hint) : [];
-  const directValues = (field) => Array.from(new Set((employees || []).filter((e) => e[field] && matchesSubstring(e[field], hint)).map((e) => e[field])));
+  // LIVE BUG FIX (2026-11), direct instruction - "THE CURVE" and "The
+  // Curve" are the SAME real value and must never show up as two
+  // separate ambiguous options. Deduped by normalizeKey (not the raw
+  // field value), displaying the canonical (most-common-spelling) name
+  // via buildDisplayNames - the SAME canonicalization already used for
+  // Department/Location/Doer/HOD breakdowns elsewhere in this app.
+  const directValues = (field) => {
+    const display = buildDisplayNames(employees || [], field);
+    const seenKeys = new Set();
+    const out = [];
+    for (const e of (employees || [])) {
+      if (!e[field] || !matchesSubstring(e[field], hint)) continue;
+      const key = normalizeKey(e[field]);
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      out.push(display.get(key) || e[field]);
+    }
+    return out;
+  };
   const locationValues = (aliasLoc && aliasLoc.length) ? aliasLoc : directValues('location');
   const companyLocationValues = (aliasCompLoc && aliasCompLoc.length) ? aliasCompLoc : directValues('companyLocation');
   const departmentValues = (aliasDept && aliasDept.length) ? aliasDept : directValues('department');
@@ -338,15 +369,15 @@ function filterEmployeesForReport(employees, query) {
     // confirmed aliases from EITHER system pass; with neither resolving
     // anything, the fallback substring match also checks both fields.
     if ((query.resolvedLocations && query.resolvedLocations.length) || (query.resolvedCompanyLocations && query.resolvedCompanyLocations.length)) {
-      const matchesLocation = Boolean(query.resolvedLocations && query.resolvedLocations.length && query.resolvedLocations.includes(e.location));
-      const matchesCompanyLocation = Boolean(query.resolvedCompanyLocations && query.resolvedCompanyLocations.length && query.resolvedCompanyLocations.includes(e.companyLocation));
+      const matchesLocation = includesNormalized(query.resolvedLocations, e.location);
+      const matchesCompanyLocation = includesNormalized(query.resolvedCompanyLocations, e.companyLocation);
       if (!matchesLocation && !matchesCompanyLocation) return false;
     } else if (query.location) {
       const matchesLocation = matchesSubstring(e.location, query.location);
       const matchesCompanyLocation = matchesSubstring(e.companyLocation, query.location);
       if (!matchesLocation && !matchesCompanyLocation) return false;
     }
-    if (query.resolvedDepartments && query.resolvedDepartments.length) { if (!query.resolvedDepartments.includes(e.department)) return false; }
+    if (query.resolvedDepartments && query.resolvedDepartments.length) { if (!includesNormalized(query.resolvedDepartments, e.department)) return false; }
     else if (query.department && !matchesSubstring(e.department, query.department)) return false;
     if (query.resolvedCompany) { if (!matchesSubstring(e.company, query.resolvedCompany)) return false; }
     else if (query.company && !matchesSubstring(e.company, query.company)) return false;
@@ -368,9 +399,9 @@ function filterEmployeesForReport(employees, query) {
     // so these are separate, ALWAYS-AND conditions: "The curve HO" means
     // Company Location IS The Curve's real value AND Location IS HO,
     // never either/or.
-    if (query.placeLocation && query.placeLocation.length && !query.placeLocation.includes(e.location)) return false;
-    if (query.placeCompanyLocation && query.placeCompanyLocation.length && !query.placeCompanyLocation.includes(e.companyLocation)) return false;
-    if (query.placeDepartment && query.placeDepartment.length && !query.placeDepartment.includes(e.department)) return false;
+    if (query.placeLocation && query.placeLocation.length && !includesNormalized(query.placeLocation, e.location)) return false;
+    if (query.placeCompanyLocation && query.placeCompanyLocation.length && !includesNormalized(query.placeCompanyLocation, e.companyLocation)) return false;
+    if (query.placeDepartment && query.placeDepartment.length && !includesNormalized(query.placeDepartment, e.department)) return false;
     if (query.placeCompany && !matchesSubstring(e.company, query.placeCompany)) return false;
     if (query.dojMonth) {
       if (!e.doj) return false;
@@ -444,7 +475,22 @@ function siteDisplayLabel(resolvedValue, originalHint) {
 // a code to the real company name (and falls back to the raw hint only
 // when nothing could be resolved at all), so resolvedCompany is always
 // the right value to use here - no new lookup needed.
-function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLocations, companyHint, resolvedCompany, departmentHint, reportingDoerHint, reportingManagerHint, placeDisplayParts }) {
+// LIVE BUG FIX (2026-11), direct instruction, item 3 - "Captions/titles/
+// file names use the proper display name from the HR data (e.g.
+// 'Archana Shroff', not 'archana shroff')." departmentHint/
+// reportingDoerHint/reportingManagerHint used to be the sender's own
+// TYPED hint text verbatim, whatever casing they happened to type -
+// resolved here instead to the canonical (most-common-spelling) value
+// from the actual matched candidates, via the SAME buildDisplayNames
+// used everywhere else. Falls back to the raw hint only if there are no
+// candidates to resolve a real spelling from (defensive - deriveTargetLabel
+// is always called after filtering in practice).
+function canonicalHintDisplay(candidates, field, hint) {
+  if (!hint || !candidates || !candidates.length) return hint;
+  const display = buildDisplayNames(candidates, field);
+  return display.get(normalizeKey(hint)) || hint;
+}
+function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLocations, companyHint, resolvedCompany, departmentHint, reportingDoerHint, reportingManagerHint, placeDisplayParts, candidates }) {
   // HR reports fix (2026-11-25), direct instruction, Part B item 3 -
   // "use the resolved display value (e.g. 'The Curve — HO — Active
   // staff · 4'), not 'Site (Curve)'." Each part is already a genuine
@@ -460,13 +506,13 @@ function deriveTargetLabel({ locationHint, resolvedLocations, resolvedCompanyLoc
   }
   if (resolvedCompany) return String(resolvedCompany).trim();
   if (companyHint) return String(companyHint).trim();
-  if (departmentHint) return String(departmentHint).trim();
+  if (departmentHint) return String(canonicalHintDisplay(candidates, 'department', departmentHint)).trim();
   // HR reports fix (2026-11-25), direct instruction, Part B item 1 - a
   // Doer/HOD-rostered report (no location/company/dept named at all)
   // still gets a real caption/filename instead of falling back to a
   // completely generic one.
-  if (reportingDoerHint) return 'Doer: ' + String(reportingDoerHint).trim();
-  if (reportingManagerHint) return 'HOD: ' + String(reportingManagerHint).trim();
+  if (reportingDoerHint) return 'Doer: ' + String(canonicalHintDisplay(candidates, 'reportingDoer', reportingDoerHint)).trim();
+  if (reportingManagerHint) return 'HOD: ' + String(canonicalHintDisplay(candidates, 'reportingManager', reportingManagerHint)).trim();
   return null;
 }
 async function resolveOneTargetFromFilters(filters, employees) {
@@ -481,7 +527,8 @@ async function resolveOneTargetFromFilters(filters, employees) {
     departmentHint: filters.department,
     reportingDoerHint: filters.reportingDoer,
     reportingManagerHint: filters.reportingManager,
-    placeDisplayParts: filters.placeDisplayParts
+    placeDisplayParts: filters.placeDisplayParts,
+    candidates
   });
   return { locationHint: filters.location, filters, candidates, label, statusLabel: titleCaseStatus(filters.status) };
 }
@@ -594,6 +641,39 @@ async function clearPendingColumnQuestion(phone) {
   try { await redis.del(PENDING_COLUMN_QUESTION_PREFIX + phone); } catch (err) { /* best effort */ }
 }
 
+// ---------------- Pending place-hint-question state (ask once, retry
+// once, then use the best match) ----------------
+// LIVE BUG FIX (2026-11), direct instruction - the place-hint ambiguity
+// question used to have NO pending state at all: any reply (including a
+// perfectly clear "both are the same") was re-processed as a brand-new
+// request, which re-ran classifyPlaceHint from scratch and asked the
+// IDENTICAL question again. Same TTL/prefix convention as the column
+// question above, plus a retryCount this one actually needs (the column
+// question re-asks forever on an unparseable reply; this one must not -
+// "if still unclear after one retry, use the best match and say which
+// one was used").
+const PENDING_PLACE_HINT_QUESTION_PREFIX = 'wa-report-pending-place-hint:';
+const PENDING_PLACE_HINT_QUESTION_TTL_SECONDS = 15 * 60;
+async function savePendingPlaceHintQuestion(phone, data) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(PENDING_PLACE_HINT_QUESTION_PREFIX + phone, JSON.stringify(Object.assign({}, data, { savedAt: Date.now() })), { ex: PENDING_PLACE_HINT_QUESTION_TTL_SECONDS }); } catch (err) { /* best effort */ }
+}
+async function getPendingPlaceHintQuestion(phone) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(PENDING_PLACE_HINT_QUESTION_PREFIX + phone);
+    if (!raw) return null;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (err) { return null; }
+}
+async function clearPendingPlaceHintQuestion(phone) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(PENDING_PLACE_HINT_QUESTION_PREFIX + phone); } catch (err) { /* best effort */ }
+}
+
 // ---------------- Last-sent-report memory (Phase 2, "resend as Excel") ----------------
 // LIVE INCIDENT (2026-11-24), direct instruction, Example 2 - "Ei duto
 // Excel e din" must resend the SAME reports (same targets/columns), only
@@ -672,13 +752,22 @@ const GROUPED_COUNT_TOTAL_SUFFIX = {
 function buildGroupedCountText(target, groupKeys, lang) {
   const groupCol = COLUMN_BY_KEY.get(groupKeys[0]);
   const groupLabel = groupCol ? groupCol.label : groupKeys[0];
-  const counts = new Map();
+  // LIVE BUG FIX (2026-11), direct instruction - grouped by the SAME
+  // normalized key used everywhere else (merges case/space/punctuation
+  // variants into one bucket - "THE CURVE 3"/"The Curve 2" becomes one
+  // "The Curve 5"), displaying the canonical (most-common-spelling) name.
+  const display = buildDisplayNames(target.candidates, groupKeys[0]);
+  const counts = new Map(); // bucketKey -> { label, count }
   for (const e of target.candidates) {
     const val = groupCol ? groupCol.getValue(e) : null;
-    const key = (val === undefined || val === null || String(val).trim() === '') ? '(blank)' : String(val);
-    counts.set(key, (counts.get(key) || 0) + 1);
+    const isBlank = (val === undefined || val === null || String(val).trim() === '');
+    const normKey = isBlank ? null : normalizeKey(val);
+    const bucketKey = isBlank ? '(blank)' : (normKey || String(val));
+    const label = isBlank ? '(blank)' : (display.get(normKey) || String(val));
+    const existing = counts.get(bucketKey);
+    counts.set(bucketKey, { label, count: (existing ? existing.count : 0) + 1 });
   }
-  const line = Array.from(counts.entries()).map(([k, n]) => k + ' ' + n).join(' · ');
+  const line = Array.from(counts.values()).map((b) => b.label + ' ' + b.count).join(' · ');
   const prefix = (target.label ? target.label + ' — ' : '') + target.statusLabel + ' staff ' + groupLabel + '-wise: ';
   return prefix + line + ' · ' + (GROUPED_COUNT_TOTAL_SUFFIX[lang] || GROUPED_COUNT_TOTAL_SUFFIX.english)(target.candidates.length);
 }
@@ -730,17 +819,77 @@ const PLACE_HINT_UNRESOLVED_TEXT = {
   hinglish: (hint) => '"' + hint + '" naam ka koi site, company location, department, ya company nahi mila. Spelling check kijiye ya alag tarike se bataiye.',
   english: (hint) => 'Could not find any site/company location/department/company matching "' + hint + '" - please check the spelling or phrase it differently.'
 };
-// "If a word matches several columns or several values, ask one short
-// question" - a single clarifying reply, not a remembered multi-turn
-// flow (a deliberate, bounded scope call for this fix - a genuinely
-// ambiguous word is rare next to the two live bugs this fix targets,
-// silently-wrong-field and silently-dropped).
-const PLACE_HINT_AMBIGUOUS_TEXT = {
-  banglish: (hint, options) => '"' + hint + '" ei naam-ta ekadhik jayga-y mile geche: ' + options + '. Ektu specific kore abar bolun (jemon "Location: HO" othoba "Department: HR").',
-  hinglish: (hint, options) => '"' + hint + '" yeh naam ek se zyada jagah match hua: ' + options + '. Thoda specific karke dobara bataiye (jaise "Location: HO" ya "Department: HR").',
-  english: (hint, options) => '"' + hint + '" matches more than one thing: ' + options + '. Please say it more specifically (e.g. "Location: HO" or "Department: HR").'
-};
 const PLACE_FIELD_DISPLAY_NAME = { location: 'Location', companyLocation: 'Company Location', department: 'Department', company: 'Company' };
+// LIVE BUG FIX (2026-11), direct instruction - genuine remaining
+// ambiguity (now rare: the normalizeKey fix above already merges every
+// case/space/punctuation spelling variant, which was the common case)
+// gets NUMBERED options in the sender's own language, never a repeated
+// identical question. flattenPlaceHintOptions is the SINGLE source of
+// truth for option order - both the question text and the answer parser
+// below build their numbering from this exact same list, so "2" always
+// means the same option on both sides.
+function flattenPlaceHintOptions(matches) {
+  return matches.flatMap((m) => m.values.map((v) => ({ field: m.field, value: v, label: PLACE_FIELD_DISPLAY_NAME[m.field] + ': ' + v })));
+}
+function buildPlaceHintOptionsListText(options) {
+  return options.map((o, i) => (i + 1) + ') ' + o.label).join('\n');
+}
+const PLACE_HINT_AMBIGUOUS_TEXT = {
+  banglish: (hint, optionsText) => '"' + hint + '" duto jaygay pawa geche:\n' + optionsText + '\nNumber likhe uttor din (jemon "1"), othoba "duto-i" likhun dutoi dhorte.',
+  hinglish: (hint, optionsText) => '"' + hint + '" do jagah mila:\n' + optionsText + '\nNumber likh kar jawab dijiye (jaise "1"), ya "dono" likhiye dono lene ke liye.',
+  english: (hint, optionsText) => '"' + hint + '" matches more than one thing:\n' + optionsText + '\nReply with a number (e.g. "1"), or "both"/"all" to include every option.'
+};
+const PLACE_HINT_COULD_NOT_PARSE_TEXT = {
+  banglish: 'Bujhte parini, abar bolun please.',
+  hinglish: 'Samajh nahi aaya, dobara bataiye please.',
+  english: "Didn't quite catch that - please try again."
+};
+// "If still unclear after one retry, use the best match and say which
+// one was used" - the first option in the SAME numbered list (matches
+// the order classifyPlaceHint itself returned them in), never a silent
+// guess - the sender is told plainly which one was picked.
+const PLACE_HINT_FALLBACK_USED_TEXT = {
+  banglish: (chosenLabel) => 'Specific kore bolenni, tai "' + chosenLabel + '" dhore agiye jacchi.',
+  hinglish: (chosenLabel) => 'Specific nahi bataya, isliye "' + chosenLabel + '" maan kar aage badh raha hoon.',
+  english: (chosenLabel) => 'You didn\'t specify, so I\'m proceeding with "' + chosenLabel + '".'
+};
+// Accepts a numbered answer ("1", "2"), a comma list ("1,2"), a
+// both/all-style word in any of the 3 languages, or free text naming an
+// option (matched the same tolerant way as everything else in this file -
+// normalizeKey, never a raw compare). Returns the array of {field,value}
+// selected, or null if nothing could be parsed.
+function parsePlaceHintAnswer(raw, options) {
+  const t = String(raw || '').trim();
+  if (!t) return null;
+  if (/^(both|same|dutoi|duto-i|duto i|dono|sob|all|সব)$/i.test(t.replace(/\s+/g, ''))) {
+    return options.map((o) => ({ field: o.field, value: o.value }));
+  }
+  const parts = splitColumnAnswerParts(t.toLowerCase());
+  const selected = [];
+  for (const part of parts) {
+    const num = Number(part);
+    if (Number.isInteger(num) && num >= 1 && num <= options.length) { selected.push(options[num - 1]); continue; }
+    const byLabel = options.find((o) => normalizeKey(o.label) === normalizeKey(part) || normalizeKey(o.value) === normalizeKey(part));
+    if (byLabel) selected.push(byLabel);
+  }
+  if (!selected.length) return null;
+  const seen = new Set();
+  return selected.filter((o) => { const k = o.field + '|' + o.value; if (seen.has(k)) return false; seen.add(k); return true; }).map((o) => ({ field: o.field, value: o.value }));
+}
+// Merges one or more resolved {field,value} selections into baseFilters -
+// the SAME AND-accumulation every single clean match already used
+// (multiple values for the SAME field OR together via the array; a
+// different field is a separate, always-AND condition - see
+// filterEmployeesForReport's own comment on why).
+function applyPlaceHintSelection(baseFilters, placeDisplayParts, selection) {
+  for (const { field, value } of selection) {
+    if (field === 'location') baseFilters.placeLocation = (baseFilters.placeLocation || []).concat([value]);
+    else if (field === 'companyLocation') baseFilters.placeCompanyLocation = (baseFilters.placeCompanyLocation || []).concat([value]);
+    else if (field === 'department') baseFilters.placeDepartment = (baseFilters.placeDepartment || []).concat([value]);
+    else if (field === 'company') baseFilters.placeCompany = value;
+  }
+  placeDisplayParts.push(selection.map((s) => s.value).join(' / '));
+}
 // A direct-send report normally has NO separate text reply (the document
 // + caption ARE the reply) - but a restricted column asked for and left
 // out still needs to be SAID, not silently dropped, so this is the one
@@ -805,15 +954,25 @@ function buildGroupedRows(candidates, groupKeys, includedColumns) {
   const [thisKey, ...restKeys] = groupKeys;
   const groupCol = COLUMN_BY_KEY.get(thisKey);
   const groupLabel = groupCol ? groupCol.label : thisKey;
-  const groups = new Map();
+  // LIVE BUG FIX (2026-11), direct instruction - a grouped report must
+  // never show two separate sections for the same real value spelled two
+  // ways ("DOER: THE CURVE" / "DOER: The Curve", each with only some of
+  // that doer's real rows) - grouped by the SAME normalized key used
+  // everywhere else, one section per real value, every row included,
+  // labelled with the canonical (most-common-spelling) display name.
+  const display = buildDisplayNames(candidates, thisKey);
+  const groups = new Map(); // bucketKey -> { label, members }
   for (const e of candidates) {
     const val = groupCol ? groupCol.getValue(e) : null;
-    const key = (val === undefined || val === null || String(val).trim() === '') ? '(blank)' : String(val);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(e);
+    const isBlank = (val === undefined || val === null || String(val).trim() === '');
+    const normKey = isBlank ? null : normalizeKey(val);
+    const bucketKey = isBlank ? '(blank)' : (normKey || String(val));
+    const label = isBlank ? '(blank)' : (display.get(normKey) || String(val));
+    if (!groups.has(bucketKey)) groups.set(bucketKey, { label, members: [] });
+    groups.get(bucketKey).members.push(e);
   }
   const rows = [];
-  for (const [val, members] of groups) {
+  for (const { label: val, members } of groups.values()) {
     rows.push({ section: groupLabel + ': ' + val });
     if (restKeys.length) {
       rows.push(...buildGroupedRows(members, restKeys, includedColumns));
@@ -944,7 +1103,6 @@ async function deliverPendingReportDocuments(spec) {
 async function sendApprovedReport(approval) {
   const wa = getWhatsappAssistant();
   const spec = approval.pendingReportRender;
-  const employeeService = require('../employeeService');
   const { employees } = await employeeService.getEmployeeData();
   let targets = [];
   for (const filters of spec.targetsFilters) targets.push(await resolveOneTargetFromFilters(filters, employees));
@@ -994,6 +1152,14 @@ async function sendApprovedReport(approval) {
 // model call, while the real dispatcher call site always omits `deps`.
 async function handleHrReportRequest({ phone, name, lang, text, history, senderEmployee, employees, deps }) {
   const extract = (deps && deps.extract) || extractHrReportRequest;
+  // LIVE BUG FIX (2026-11), direct instruction - checked BEFORE the
+  // column question (a place-hint ambiguity is always asked first in the
+  // normal flow, so its pending state - if any - is always the more
+  // recent one outstanding).
+  const pendingPlace = await getPendingPlaceHintQuestion(phone);
+  if (pendingPlace) {
+    return continueWithPlaceHintAnswer({ phone, name, lang, text, pending: pendingPlace, senderEmployee, employees });
+  }
   const pending = await getPendingColumnQuestion(phone);
   if (pending) {
     return continueWithColumnAnswer({ phone, name, lang, text, pending, senderEmployee, employees });
@@ -1046,51 +1212,50 @@ async function handleHrReportRequest({ phone, name, lang, text, history, senderE
   return beginReportRequest({ phone, name, lang: extracted.language || lang, text, extracted, senderEmployee, employees });
 }
 
-async function beginReportRequest({ phone, name, lang, text, extracted, senderEmployee, employees }) {
-  const baseFilters = {
-    status: extracted.status || null,
-    designation: extracted.designation || null,
-    department: extracted.department || null,
-    company: extracted.company || null,
-    employmentType: extracted.employmentType || null,
-    groupD: extracted.collarType || null,
-    dojMonth: extracted.dojMonth || null,
-    dojYear: extracted.dojYear || null,
-    ageFilter: extracted.ageFilter || null,
-    yearsOfServiceFilter: extracted.yearsOfServiceFilter || null,
-    reportingDoer: extracted.reportingDoer || null,
-    reportingManager: extracted.reportingManager || null
-  };
-  // HR reports fix (2026-11-25), direct instruction, Part B item 3 -
-  // multi-field filter resolution. Each placeHints entry is classified
-  // against every real column BEFORE any target is built - "never send
-  // an unfiltered report when the sender asked for a filter" means this
-  // has to settle (or honestly fail) up front, never fall through to an
-  // unfiltered result. A clean single-field, single-value match for each
-  // hint accumulates into baseFilters.place* (AND-combined - see
-  // filterEmployeesForReport's own comment on why these are separate
-  // from the OR-style resolvedLocations/resolvedCompanyLocations used by
-  // the `locations` array above); display values are kept alongside for
-  // the caption (deriveTargetLabel).
-  const placeDisplayParts = [];
-  for (const hint of (extracted.placeHints || [])) {
+// HR reports fix (2026-11-25), direct instruction, Part B item 3 - multi-
+// field filter resolution. Each placeHints entry is classified against
+// every real column BEFORE any target is built - "never send an
+// unfiltered report when the sender asked for a filter" means this has
+// to settle (or honestly fail) up front, never fall through to an
+// unfiltered result. A clean single-field, single-value match for each
+// hint accumulates into baseFilters.place* (AND-combined - see
+// filterEmployeesForReport's own comment on why these are separate from
+// the OR-style resolvedLocations/resolvedCompanyLocations used by the
+// `locations` array elsewhere); display values are kept alongside for
+// the caption (deriveTargetLabel).
+// LIVE BUG FIX (2026-11), direct instruction - extracted out of
+// beginReportRequest so the SAME loop can resume from a specific index
+// (continueWithPlaceHintAnswer below, after a genuine ambiguity is
+// resolved) instead of only ever running fresh from hint 0. Mutates
+// baseFilters/placeDisplayParts in place and returns where it stopped.
+async function resolvePlaceHints({ hints, startIndex, employees, baseFilters, placeDisplayParts }) {
+  for (let i = startIndex; i < hints.length; i++) {
+    const hint = hints[i];
     const matches = await classifyPlaceHint(hint, employees);
-    if (!matches.length) {
-      return { case: 'hr_report', replyText: (PLACE_HINT_UNRESOLVED_TEXT[lang] || PLACE_HINT_UNRESOLVED_TEXT.english)(hint), summaryForOwner: text.slice(0, 160), lang };
-    }
+    if (!matches.length) return { ok: false, unresolved: true, hint };
     const totalValues = matches.reduce((n, m) => n + m.values.length, 0);
     if (matches.length > 1 || totalValues > 1) {
-      const options = matches.flatMap((m) => m.values.map((v) => PLACE_FIELD_DISPLAY_NAME[m.field] + ': ' + v)).join(', ');
-      return { case: 'hr_report', replyText: (PLACE_HINT_AMBIGUOUS_TEXT[lang] || PLACE_HINT_AMBIGUOUS_TEXT.english)(hint, options), summaryForOwner: text.slice(0, 160), lang };
+      return { ok: false, unresolved: false, hintIndex: i, hint, matches };
     }
     const { field, values } = matches[0];
-    if (field === 'location') baseFilters.placeLocation = (baseFilters.placeLocation || []).concat(values);
-    else if (field === 'companyLocation') baseFilters.placeCompanyLocation = (baseFilters.placeCompanyLocation || []).concat(values);
-    else if (field === 'department') baseFilters.placeDepartment = (baseFilters.placeDepartment || []).concat(values);
-    else if (field === 'company') baseFilters.placeCompany = values[0];
-    placeDisplayParts.push(values[0]);
+    applyPlaceHintSelection(baseFilters, placeDisplayParts, [{ field, value: values[0] }]);
   }
+  return { ok: true };
+}
+// The rest of beginReportRequest's own logic (everything after place
+// hints are fully resolved) - shared by the fresh path and the resumed-
+// after-answer path (continueWithPlaceHintAnswer), so neither can drift
+// from the other. `fallbackNote`, when set (the "ask once, then use the
+// best match" case), is prepended to whatever reply text comes out -
+// finalizeReports' own successful document-send path already supports a
+// replyText alongside pendingDocuments (see its own excludedRestrictedLabels
+// case), so this never needs a second separate message.
+async function continueAfterPlaceHints({ phone, name, lang, text, extracted, senderEmployee, employees, baseFilters, placeDisplayParts, fallbackNote }) {
   if (placeDisplayParts.length) baseFilters.placeDisplayParts = placeDisplayParts;
+  const withNote = (result) => {
+    if (!fallbackNote || !result) return result;
+    return Object.assign({}, result, { replyText: result.replyText ? (fallbackNote + '\n\n' + result.replyText) : fallbackNote });
+  };
   // HR reports fix 2/5 (2026-11-24), direct instruction - "a filter on a
   // Personal derived field counts as using it" - a filter-only field
   // (not also requested as a rendered column) still needs to count
@@ -1128,15 +1293,102 @@ async function beginReportRequest({ phone, name, lang, text, extracted, senderEm
   }
 
   if (extracted.intent === 'count') {
-    return { case: 'hr_report', replyText: buildCountReplyText(targets, lang, groupKeys), summaryForOwner: text.slice(0, 160), lang };
+    return withNote({ case: 'hr_report', replyText: buildCountReplyText(targets, lang, groupKeys), summaryForOwner: text.slice(0, 160), lang });
   }
 
   const { keys: columnKeys, wantsAll } = resolveModelColumns(extracted.columns);
   if (!columnKeys && !wantsAll) {
     await savePendingColumnQuestion(phone, { targetsFilters: targets.map((t) => t.filters), format, groupKeys, filterOnlyPersonalKeys, lang });
-    return { case: 'hr_report', replyText: buildColumnQuestionText(lang), summaryForOwner: text.slice(0, 160), lang };
+    return withNote({ case: 'hr_report', replyText: buildColumnQuestionText(lang), summaryForOwner: text.slice(0, 160), lang });
   }
-  return finalizeReports({ phone, name, lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format, groupKeys, filterOnlyPersonalKeys, targets, senderEmployee });
+  return withNote(await finalizeReports({ phone, name, lang, columnKeys: wantsAll ? allNonRestrictedColumnKeys() : columnKeys, format, groupKeys, filterOnlyPersonalKeys, targets, senderEmployee }));
+}
+async function beginReportRequest({ phone, name, lang, text, extracted, senderEmployee, employees }) {
+  const baseFilters = {
+    status: extracted.status || null,
+    designation: extracted.designation || null,
+    department: extracted.department || null,
+    company: extracted.company || null,
+    employmentType: extracted.employmentType || null,
+    groupD: extracted.collarType || null,
+    dojMonth: extracted.dojMonth || null,
+    dojYear: extracted.dojYear || null,
+    ageFilter: extracted.ageFilter || null,
+    yearsOfServiceFilter: extracted.yearsOfServiceFilter || null,
+    reportingDoer: extracted.reportingDoer || null,
+    reportingManager: extracted.reportingManager || null
+  };
+  const placeDisplayParts = [];
+  const hints = extracted.placeHints || [];
+  const resolved = await resolvePlaceHints({ hints, startIndex: 0, employees, baseFilters, placeDisplayParts });
+  if (!resolved.ok) {
+    if (resolved.unresolved) {
+      return { case: 'hr_report', replyText: (PLACE_HINT_UNRESOLVED_TEXT[lang] || PLACE_HINT_UNRESOLVED_TEXT.english)(resolved.hint), summaryForOwner: text.slice(0, 160), lang };
+    }
+    const options = flattenPlaceHintOptions(resolved.matches);
+    await savePendingPlaceHintQuestion(phone, {
+      lang, text, extracted, hints, hintIndex: resolved.hintIndex, hint: resolved.hint, options,
+      baseFilters, placeDisplayParts, retryCount: 0
+    });
+    return { case: 'hr_report', replyText: (PLACE_HINT_AMBIGUOUS_TEXT[lang] || PLACE_HINT_AMBIGUOUS_TEXT.english)(resolved.hint, buildPlaceHintOptionsListText(options)), summaryForOwner: text.slice(0, 160), lang };
+  }
+  return continueAfterPlaceHints({ phone, name, lang, text, extracted, senderEmployee, employees, baseFilters, placeDisplayParts });
+}
+// LIVE BUG FIX (2026-11), direct instruction - answers the pending place-
+// hint question (never re-runs extract()/classifyPlaceHint from scratch,
+// which is what used to re-trigger the identical question on ANY reply,
+// including a perfectly clear "both are the same"). Accepts a number, a
+// both/all-style word, or free text naming an option; after ONE
+// unparseable reply it re-asks the SAME question once; after a SECOND
+// unparseable reply it uses the first option and says so plainly, rather
+// than looping forever.
+async function continueWithPlaceHintAnswer({ phone, name, lang, text, pending, senderEmployee, employees }) {
+  const useLang = pending.lang || lang;
+  const selection = parsePlaceHintAnswer(text, pending.options);
+  if (!selection) {
+    if ((pending.retryCount || 0) >= 1) {
+      const fallbackOption = pending.options[0];
+      await clearPendingPlaceHintQuestion(phone);
+      return resumeAfterPlaceHintResolved({
+        phone, name, lang: useLang, pending, employees, senderEmployee,
+        selection: [{ field: fallbackOption.field, value: fallbackOption.value }],
+        fallbackNote: (PLACE_HINT_FALLBACK_USED_TEXT[useLang] || PLACE_HINT_FALLBACK_USED_TEXT.english)(fallbackOption.label)
+      });
+    }
+    await savePendingPlaceHintQuestion(phone, Object.assign({}, pending, { retryCount: (pending.retryCount || 0) + 1 }));
+    return {
+      case: 'hr_report',
+      replyText: (PLACE_HINT_COULD_NOT_PARSE_TEXT[useLang] || PLACE_HINT_COULD_NOT_PARSE_TEXT.english) + '\n\n' + (PLACE_HINT_AMBIGUOUS_TEXT[useLang] || PLACE_HINT_AMBIGUOUS_TEXT.english)(pending.hint, buildPlaceHintOptionsListText(pending.options)),
+      summaryForOwner: text.slice(0, 160), lang: useLang
+    };
+  }
+  await clearPendingPlaceHintQuestion(phone);
+  return resumeAfterPlaceHintResolved({ phone, name, lang: useLang, pending, employees, senderEmployee, selection, fallbackNote: null });
+}
+// Applies the resolved selection for the ambiguous hint, then continues
+// resolving any REMAINING place hints after it (which may hit a NEW
+// ambiguity of their own - saved as its own fresh pending question,
+// retryCount reset) before finally falling through to the rest of the
+// original request (continueAfterPlaceHints), using the SAME `extracted`
+// object the original message produced.
+async function resumeAfterPlaceHintResolved({ phone, name, lang, pending, employees, senderEmployee, selection, fallbackNote }) {
+  const baseFilters = pending.baseFilters;
+  const placeDisplayParts = pending.placeDisplayParts;
+  applyPlaceHintSelection(baseFilters, placeDisplayParts, selection);
+  const resolved = await resolvePlaceHints({ hints: pending.hints, startIndex: pending.hintIndex + 1, employees, baseFilters, placeDisplayParts });
+  if (!resolved.ok) {
+    if (resolved.unresolved) {
+      return { case: 'hr_report', replyText: (PLACE_HINT_UNRESOLVED_TEXT[lang] || PLACE_HINT_UNRESOLVED_TEXT.english)(resolved.hint), summaryForOwner: pending.text.slice(0, 160), lang };
+    }
+    const options = flattenPlaceHintOptions(resolved.matches);
+    await savePendingPlaceHintQuestion(phone, {
+      lang, text: pending.text, extracted: pending.extracted, hints: pending.hints, hintIndex: resolved.hintIndex, hint: resolved.hint, options,
+      baseFilters, placeDisplayParts, retryCount: 0
+    });
+    const replyText = (PLACE_HINT_AMBIGUOUS_TEXT[lang] || PLACE_HINT_AMBIGUOUS_TEXT.english)(resolved.hint, buildPlaceHintOptionsListText(options));
+    return { case: 'hr_report', replyText: fallbackNote ? (fallbackNote + '\n\n' + replyText) : replyText, summaryForOwner: pending.text.slice(0, 160), lang };
+  }
+  return continueAfterPlaceHints({ phone, name, lang, text: pending.text, extracted: pending.extracted, senderEmployee, employees, baseFilters, placeDisplayParts, fallbackNote });
 }
 
 async function continueWithColumnAnswer({ phone, name, lang, text, pending, senderEmployee, employees }) {

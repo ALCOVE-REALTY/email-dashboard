@@ -914,8 +914,8 @@ router.get('/collar', async (req, res) => {
 // route convention as Category (collar) Distribution just above.
 router.get('/company', async (req, res) => {
   try {
-    const { employees } = await employeeService.getEmployeeData();
-    res.json(analytics.companyAnalytics(employees));
+    const { employees, companyNames } = await employeeService.getEmployeeData();
+    res.json(analytics.companyAnalytics(employees, companyNames));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1016,8 +1016,8 @@ router.get('/collar/pdf', async (req, res) => {
 
 router.get('/company/pdf', async (req, res) => {
   try {
-    const { employees } = await employeeService.getEmployeeData();
-    const data = analytics.companyAnalytics(employees);
+    const { employees, companyNames } = await employeeService.getEmployeeData();
+    const data = analytics.companyAnalytics(employees, companyNames);
     const pdfBuffer = await buildTablePdfBuffer({
       title: 'Company Distribution Report',
       subtitle: 'Active Employees · Generated ' + new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
@@ -1393,7 +1393,12 @@ router.post('/letters/confirmation', async (req, res) => {
 router.get('/data-quality', async (req, res) => {
   try {
     const { employees } = await employeeService.getEmployeeData();
-    res.json(analytics.dataQualityReport(employees));
+    const report = analytics.dataQualityReport(employees);
+    // UI fix (2026-11), direct instruction, item 4 - "Spelling variants"
+    // is owner-only (everything else on this report stays visible to
+    // every HR user exactly as it already was).
+    if (!memoryService.isOwner(req.hrUser.email)) delete report.spellingVariants;
+    res.json(report);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

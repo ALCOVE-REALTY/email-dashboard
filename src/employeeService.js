@@ -76,8 +76,19 @@ function cleanValue(value) {
   return String(value == null ? '' : value).trim();
 }
 
+// LIVE BUG FIX (2026-11), direct instruction - two values differing only
+// by case/spacing/minor punctuation ("THE CURVE" vs "The Curve", "Dept."
+// vs "Dept", "Sangam-B" vs "Sangam B") are the SAME real value and must
+// never be treated as distinct (merge rows, never ask the sender to
+// disambiguate between them). Hyphens fold to a space (a compound word
+// stays two words); dots/brackets are dropped entirely (trailing
+// punctuation, not a word separator) - matches the user's own examples
+// exactly. This is the ONE shared normalize-for-matching helper for
+// every people/HR-sheet value comparison in this codebase (see its
+// export below and every other file now importing it instead of its own
+// ad-hoc comparison).
 function normalizeKey(value) {
-  return cleanValue(value).toLowerCase().replace(/\s+/g, ' ');
+  return cleanValue(value).toLowerCase().replace(/-/g, ' ').replace(/[.()[\]]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 function parseRow(row, index) {
@@ -93,6 +104,7 @@ function parseRow(row, index) {
     employeeId,
     name,
     designation: cleanValue(row[COLS.designation]),
+    designationKey: normalizeKey(cleanValue(row[COLS.designation])),
     department,
     departmentKey: normalizeKey(department),
     groupD: cleanValue(row[COLS.groupD]),
@@ -100,7 +112,9 @@ function parseRow(row, index) {
     location,
     locationKey: normalizeKey(location),
     companyLocation: cleanValue(row[COLS.companyLocation]),
+    companyLocationKey: normalizeKey(cleanValue(row[COLS.companyLocation])),
     company: cleanValue(row[COLS.company]),
+    companyKey: normalizeKey(cleanValue(row[COLS.company])),
     reportingDoer: cleanValue(row[COLS.reportingDoer]),
     reportingDoerKey: normalizeKey(cleanValue(row[COLS.reportingDoer])),
     reportingManager: cleanValue(row[COLS.reportingManager]),
@@ -129,14 +143,22 @@ function parseRow(row, index) {
 // Department/Location names have real-world case inconsistencies (e.g.
 // "HORTICULTURE" vs "Horticulture"). Group by normalized key, but display
 // whichever original spelling is most common for that key.
+// LIVE BUG FIX (2026-11), direct instruction - the key is now computed
+// fresh via normalizeKey(emp[field]) rather than read from a precomputed
+// `emp[field+'Key']` property: identical result for a real parsed sheet
+// row (parseRow already sets every *Key field this way), but also correct
+// for any other employee-shaped object that has no precomputed *Key
+// field at all (e.g. a plain test fixture) - this function is now called
+// from outside employeeService.js too (hrReportService.js's own
+// classifyPlaceHint/grouping fix), which can't assume that field exists.
 function buildDisplayNames(employees, field) {
-  const keyField = field + 'Key';
   const variantCounts = new Map();
   for (const emp of employees) {
-    const key = emp[keyField];
+    const raw = emp[field];
+    const key = normalizeKey(raw);
     if (!key) continue;
     const variants = variantCounts.get(key) || new Map();
-    variants.set(emp[field], (variants.get(emp[field]) || 0) + 1);
+    variants.set(raw, (variants.get(raw) || 0) + 1);
     variantCounts.set(key, variants);
   }
   const display = new Map();
@@ -161,7 +183,10 @@ let cache = {
   departmentNames: new Map(),
   locationNames: new Map(),
   reportingManagerNames: new Map(),
-  doerNames: new Map()
+  doerNames: new Map(),
+  companyLocationNames: new Map(),
+  companyNames: new Map(),
+  designationNames: new Map()
 };
 let inFlight = null;
 let inFlightGen = -1;
@@ -196,7 +221,15 @@ function refreshCache() {
       departmentNames: buildDisplayNames(employees, 'department'),
       locationNames: buildDisplayNames(employees, 'location'),
       reportingManagerNames: buildDisplayNames(employees, 'reportingManager'),
-      doerNames: buildDisplayNames(employees, 'reportingDoer')
+      doerNames: buildDisplayNames(employees, 'reportingDoer'),
+      // LIVE BUG FIX (2026-11), direct instruction - Company Location/
+      // Company/Designation get the SAME case/space/punctuation-variant
+      // merging as Department/Location/Doer/HOD above, so two spellings of
+      // the same real value never produce a duplicate filter/grouping
+      // option anywhere that reads from these maps.
+      companyLocationNames: buildDisplayNames(employees, 'companyLocation'),
+      companyNames: buildDisplayNames(employees, 'company'),
+      designationNames: buildDisplayNames(employees, 'designation')
     };
     return cache;
   })();
@@ -534,10 +567,12 @@ function matchesFilters(emp, query) {
   if (query.reportingManager && !containsAllWords(emp.reportingManager, query.reportingManager)) return false;
   if (query.collar && !formatCollar(emp.groupD).toLowerCase().includes(String(query.collar).toLowerCase())) return false;
   // Task 15 (2026-11) - Company Distribution's own drill-down into the
-  // Directory, same exact-value convention as collar's filterValue above
-  // (company has no alias/normalized-key treatment, so the raw value is
-  // compared directly, not via a *Key field).
-  if (query.company && (emp.company || '').toLowerCase() !== String(query.company).toLowerCase()) return false;
+  // Directory. LIVE BUG FIX (2026-11), direct instruction - now compared
+  // via companyKey (same normalizeKey treatment as department/location
+  // above), so a bucket's canonical filterValue (companyAnalytics' own
+  // displayNames) still matches every row for that company, including
+  // ones spelled with a different case/punctuation in the raw sheet.
+  if (query.company && emp.companyKey !== normalizeKey(query.company)) return false;
   if (query.gender && (emp.gender || '').toLowerCase() !== String(query.gender).toLowerCase()) return false;
   if (query.reportingDoer && !containsAllWords(emp.reportingDoer, query.reportingDoer)) return false;
   if (query.employmentType && !(emp.employmentType || '').toLowerCase().includes(String(query.employmentType).toLowerCase())) {
@@ -687,6 +722,7 @@ module.exports = {
   findOwnerEmployeeRecord,
   getConfigStatus,
   normalizeKey,
+  buildDisplayNames,
   getCompanyList,
   filterEmployees,
   findUnmatchedFilters,

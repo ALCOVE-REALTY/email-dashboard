@@ -285,6 +285,57 @@ is now enforced structurally, in code, not just as a prompting convention - see 
    service module), so a future settings store just needs an entry added to its
    `GROUPS` map, not a new check written from scratch.
 
+## Normalize before comparing people/HR-sheet values — STANDING RULE (2026-11, direct instruction)
+
+Live bug that triggered this rule: "The curve HO staff list dao" found the Company
+Location column spelled "THE CURVE" in some rows and "The Curve" in others, asked the
+sender to disambiguate between two things that are the SAME real value, then repeated
+the identical question when told "both are the same" (no pending-state existed to
+parse the answer against at all).
+
+**Every comparison of a name/value that came from a person or from the HR sheet must be
+normalized first — never a raw `===`, `.includes()`, `Set`/`Map` key, or group-by key on
+the untouched string.** This covers: employee names, Location, Company Location,
+Company, Department, Designation, Doer, HOD, site/department/company-location aliases,
+column names in the "which column do you mean" clarification, and a sender's own reply
+text (e.g. "haan"/"Haan"/"HAAN", "same"/"both"). Normalize means: case-insensitive,
+trimmed, repeated whitespace collapsed, and dots/hyphens/brackets folded (hyphens → a
+space, since a compound word stays two words; dots/brackets dropped, since they're
+trailing punctuation, not a word separator) — so `"THE CURVE"` = `"The Curve"`,
+`"Dept."` = `"Dept"`, `"Sangam-B"` = `"Sangam B"`, `"HO "` = `"HO"`.
+
+- **The shared helper is `employeeService.normalizeKey`** (exported from
+  `src/employeeService.js`) - every new comparison site uses this one function, never a
+  new hand-rolled fold. `employeeService.buildDisplayNames(employees, field)` (also
+  exported) groups by this normalized key and picks the canonical display name (the
+  MOST COMMON real spelling for that key) - this is what a sender-facing caption, a
+  grouped-report section heading, or a grouped-count reply line should show, never the
+  raw hint the sender happened to type and never an arbitrary one of several real
+  spellings.
+- **A real parsed employee row** (anything that went through `employeeService.parseRow`)
+  already carries precomputed `*Key` fields (`locationKey`, `departmentKey`,
+  `companyLocationKey`, `companyKey`, `designationKey`, `reportingDoerKey`,
+  `reportingManagerKey`) for fast in-memory filtering/dedup - but
+  `buildDisplayNames`/any NEW comparison code must still compute the key fresh via
+  `normalizeKey(value)` rather than assuming a `*Key` field exists, since a test
+  fixture (or any other employee-shaped object) may not have one.
+- `normalizeForMatch` (`whatsappAssistant.js`) is a DIFFERENT, deliberately more
+  aggressive helper (strips ALL punctuation, drops "dept"/"department" words) used for
+  fuzzy hint-vs-alias word-overlap matching and alias dedup keys - it already solves
+  that problem correctly and is NOT the same thing as `normalizeKey`; don't conflate
+  the two or swap one for the other without re-verifying the specific matching
+  behaviour it's relied on for.
+- Deliberately OUT of scope for this rule: `normalizePhone`/`hrAuth.normalizeEmail`
+  (already correctly specialized), internal enum/status strings (`'pending'`,
+  `'completed'`, Redis key prefixes, programmatic column keys), and the phonetic/
+  fuzzy employee-name matchers in `whatsappAssistant.js` (already tolerant of far more
+  than case/spacing, by design, for free-text name search - not a dedupe/exact-match
+  site).
+- When adding a NEW filter, group-by, or alias-lookup over a people/HR-sheet value,
+  check it against this rule before shipping - a raw string compare on a value a human
+  typed into a sheet cell is close to guaranteed to have at least one case/spacing
+  variant somewhere in real data.
+
 ## Before implementing any new logic/flow/step
 
 Before implementing ANY new logic/flow/step, analyse its impact on existing live

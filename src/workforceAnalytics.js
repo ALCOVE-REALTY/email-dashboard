@@ -357,28 +357,22 @@ function collarAnalytics(employees) {
 
 // Task 15 (2026-11) - Company Distribution (Demographics): same shape as
 // collarAnalytics above (key/label/filterValue/count buckets, Active-only),
-// but by the plain `company` field instead of a fixed 3-way collar split -
-// company has no alias/normalized-key treatment (unlike department/
-// location/reportingDoer), so the raw value doubles as both the bucket key
-// and the Directory's own ?company= filter value. Sorted by headcount
-// descending, largest company first - same convention groupCount above
-// already uses for Department/Location/Doer breakdowns.
-function companyAnalytics(employees) {
+// but by the plain `company` field instead of a fixed 3-way collar split.
+// LIVE BUG FIX (2026-11), direct instruction - company now DOES get the
+// same normalized-key/canonical-display treatment as department/location/
+// reportingDoer (it didn't before - two spellings of the same company
+// showed as two separate buckets); companyNames is required, same
+// contract as departmentBreakdown/locationBreakdown/doerBreakdown above.
+// filterValue is the canonical display name, which the Directory's own
+// ?company= filter (employeeService.matchesFilters) now matches via
+// companyKey, not a raw string compare - so this always finds every row
+// for that company regardless of which spelling any individual row used.
+function companyAnalytics(employees, companyNames) {
   const activeEmployees = employees.filter((e) => e.status === 'ACTIVE');
-  const counts = new Map();
-  for (const emp of activeEmployees) {
-    const value = emp.company;
-    if (!value) continue;
-    counts.set(value, (counts.get(value) || 0) + 1);
-  }
-  const buckets = Array.from(counts.entries())
-    .map(([value, count]) => ({ key: value, label: value, filterValue: value, count }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
-  return {
-    eligibleCount: activeEmployees.length,
-    activeCount: activeEmployees.length,
-    buckets
-  };
+  return Object.assign(
+    { eligibleCount: activeEmployees.length, activeCount: activeEmployees.length },
+    { buckets: groupCount(activeEmployees, 'companyKey', companyNames || new Map()).map((r) => ({ key: r.name, label: r.name, filterValue: r.name, count: r.count })) }
+  );
 }
 
 function dataQualityReport(employees) {
@@ -407,7 +401,53 @@ function dataQualityReport(employees) {
     .filter(([, count]) => count > 1)
     .map(([id, count]) => ({ employeeId: id, count }));
 
-  return { total, missing, duplicateIds };
+  return { total, missing, duplicateIds, spellingVariants: spellingVariantsReport(employees) };
+}
+
+// UI fix (2026-11), direct instruction, item 4 - "list for me any column
+// values in the HR sheet that exist in several spellings (case/space
+// variants), so I can clean the sheet." Every column normalizeKey now
+// covers (Location, Company Location, Company, Department, Designation,
+// Doer, HOD) - a group is only reported when it genuinely has MORE THAN
+// ONE raw spelling for the same normalized key (a column with every row
+// spelled identically produces nothing to report). Owner-only in the
+// route (src/workforceRoutes.js) - this function itself is a pure,
+// cheap, read-only report over the already-fetched employee list.
+const SPELLING_VARIANT_FIELDS = [
+  { field: 'location', label: 'Location' },
+  { field: 'companyLocation', label: 'Company Location' },
+  { field: 'company', label: 'Company' },
+  { field: 'department', label: 'Department' },
+  { field: 'designation', label: 'Designation' },
+  { field: 'reportingDoer', label: 'Reporting DOER' },
+  { field: 'reportingManager', label: 'HOD' }
+];
+function spellingVariantsReport(employees) {
+  const employeeService = require('./employeeService');
+  const { normalizeKey } = employeeService;
+  const report = [];
+  for (const { field, label } of SPELLING_VARIANT_FIELDS) {
+    const byKey = new Map(); // normalizedKey -> Map(rawValue -> count)
+    for (const emp of employees) {
+      const raw = emp[field];
+      if (!raw) continue;
+      const key = normalizeKey(raw);
+      if (!key) continue;
+      const variants = byKey.get(key) || new Map();
+      variants.set(raw, (variants.get(raw) || 0) + 1);
+      byKey.set(key, variants);
+    }
+    const groups = [];
+    for (const variants of byKey.values()) {
+      if (variants.size < 2) continue; // only one real spelling - nothing to flag
+      groups.push(Array.from(variants.entries()).map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count));
+    }
+    if (groups.length) {
+      groups.sort((a, b) => b.reduce((n, v) => n + v.count, 0) - a.reduce((n, v) => n + v.count, 0));
+      report.push({ field, label, groups });
+    }
+  }
+  return report;
 }
 
 // ---------- Organization Chart ----------

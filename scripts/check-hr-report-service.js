@@ -825,6 +825,14 @@ async function main() {
     const after = (await whatsappAssistant.listPendingApprovals()).length;
     return after === before + 1 && !result.pendingDocuments;
   });
+  await checkAsync('LIVE BUG FIX (2026-11), direct instruction, item 3 - a lower-cased typed hint ("archana shroff") still produces a caption/filename in the PROPER display name ("Archana Shroff", matching the real HR data), never the sender\'s own raw typed casing', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000104', name: 'Someone', lang: 'english', text: 'archana shroff er doer list dao', history: [],
+      senderEmployee: null, employees: DOER_ROSTER_EMPLOYEES,
+      deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', reportingDoer: 'archana shroff', columns: ['Emp Code', 'Name'], language: 'english' }) }
+    });
+    return Boolean(result.pendingDocuments) && result.pendingDocuments.targets[0].label === 'Doer: Archana Shroff';
+  });
 
   console.log('='.repeat(70));
   console.log('HR reports fix (2026-11-25), direct instruction, Part B item 3 - multi-field filter resolution: "The curve HO staff list dao" (Company Location AND Location combined) and "Amake duets site er list dao" (an unresolved filter must never be silently dropped)');
@@ -896,6 +904,54 @@ async function main() {
       deps: { extract: async () => ({ matchesReportIntent: true, intent: 'list', placeHints: ['Sangam'], columns: ['Emp Code', 'Name'], language: 'english' }) }
     });
     return !result.pendingDocuments && /more than one/i.test(result.replyText || '') && /Sangam North/.test(result.replyText || '') && /Sangam South/.test(result.replyText || '');
+  });
+
+  console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (2026-11), direct instruction - a genuine remaining ambiguity (now rare: the normalizeKey fix already merges every spelling variant) gets NUMBERED options, accepts a number/"both"/free text, never repeats the identical question, and falls back to the best match after one retry');
+  console.log('='.repeat(70));
+  const AMBIGUOUS_SANGAM = [
+    { employeeId: 'AM1', name: 'X', department: 'Civil', location: 'Sangam North', status: 'ACTIVE' },
+    { employeeId: 'AM2', name: 'Y', department: 'Civil', location: 'Sangam South', status: 'ACTIVE' }
+  ];
+  const sangamDeps = { extract: async () => ({ matchesReportIntent: true, intent: 'list', placeHints: ['Sangam'], columns: ['Emp Code', 'Name'], language: 'english' }) };
+  await checkAsync('the ambiguous question numbers its options ("1)"/"2)"), one per real value', async () => {
+    const result = await hrReportService.handleHrReportRequest({
+      phone: '919000000098', name: 'Someone', lang: 'english', text: 'Sangam er staff list dao', history: [],
+      senderEmployee: null, employees: AMBIGUOUS_SANGAM, deps: sangamDeps
+    });
+    return /1\) Location: Sangam North/.test(result.replyText) && /2\) Location: Sangam South/.test(result.replyText);
+  });
+  await checkAsync('replying with a number ("1") resolves to ONLY that option\'s rows - never the same question repeated', async () => {
+    const phone = '919000000099';
+    await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: 'Sangam er staff list dao', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM, deps: sangamDeps });
+    const result = await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: '1', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM });
+    return Boolean(result.pendingDocuments) && result.pendingDocuments.targets[0].candidates.length === 1 && result.pendingDocuments.targets[0].candidates[0].employeeId === 'AM1';
+  });
+  await checkAsync('LIVE BUG, exact phrasing - replying "both are the same" (the user\'s own reported reply) is accepted and resolves to BOTH options\' rows combined, never the identical question repeated', async () => {
+    const phone = '919000000100';
+    await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: 'Sangam er staff list dao', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM, deps: sangamDeps });
+    const result = await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: 'both', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM });
+    return Boolean(result.pendingDocuments) && result.pendingDocuments.targets[0].candidates.length === 2;
+  });
+  await checkAsync('replying "same" (explicitly named in the direct instruction, distinct from "both") also resolves to BOTH options\' rows combined', async () => {
+    const phone = '919000000103';
+    await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: 'Sangam er staff list dao', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM, deps: sangamDeps });
+    const result = await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: 'same', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM });
+    return Boolean(result.pendingDocuments) && result.pendingDocuments.targets[0].candidates.length === 2;
+  });
+  await checkAsync('an unparseable first reply re-asks the SAME question once (not a different one, not silently dropped)', async () => {
+    const phone = '919000000101';
+    await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: 'Sangam er staff list dao', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM, deps: sangamDeps });
+    const result = await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: 'ami bujhini ki bolte hocche', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM });
+    return !result.pendingDocuments && /1\) Location: Sangam North/.test(result.replyText) && /2\) Location: Sangam South/.test(result.replyText);
+  });
+  await checkAsync('a SECOND unparseable reply falls back to the first option and SAYS plainly which one was used, rather than looping forever', async () => {
+    const phone = '919000000102';
+    await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: 'Sangam er staff list dao', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM, deps: sangamDeps });
+    await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: 'still unclear', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM });
+    const result = await hrReportService.handleHrReportRequest({ phone, name: 'Someone', lang: 'english', text: 'still unclear again', history: [], senderEmployee: null, employees: AMBIGUOUS_SANGAM });
+    return Boolean(result.pendingDocuments) && result.pendingDocuments.targets[0].candidates.length === 1
+      && /proceeding with "Location: Sangam North"/.test(result.replyText || '');
   });
 
   console.log('='.repeat(70));
