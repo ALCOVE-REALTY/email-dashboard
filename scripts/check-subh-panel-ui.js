@@ -719,6 +719,110 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
     callCountAfterBackoffWindow > callCountShortlyAfterSecondRetry);
   await page.unroute('**/api/workforce/hr-assistant/whatsapp-all-conversations?*');
   await page.waitForTimeout(150);
+
+  // LIVE BUG FIX (2026-11, direct instruction) - the Reminders page's own
+  // version of the same incident fixed for Conversations just above: a
+  // genuine backend failure (the real route's own res.status(500).json({
+  // error }) shape, e.g. a KV/Redis outage) used to crash the client
+  // (fetch() never rejects on an HTTP error status, so the try/catch never
+  // ran) and leave the page stuck on its skeleton loader forever. First
+  // serves a real pending reminder (establishing a good list/cache), then
+  // switches the SAME endpoint to a real 500 and re-triggers a load -
+  // asserts the real row stays visible with a distinct "Couldn't update,
+  // Retry" banner, never blanked to "No pending reminders".
+  // Own isolated page (never the shared `page` above) so this block's
+  // navigation/mocks can never disturb wherever the shared page's own nav
+  // state is left for whatever check runs after this one.
+  const remPage = await browser.newPage({ viewport: { width: 384, height: 800 } });
+  await remPage.route('**/api/**', (route) => {
+    const method = route.request().method();
+    if (method !== 'GET') { route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }); return; }
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], employees: [], count: 0, unreadCount: 0, counts: { all: 0, today: 0, upcoming: 0, completed: 0, todayCompleted: 0 } }) });
+  });
+  let remindersCallCount = 0;
+  await remPage.route('**/api/workforce/hr-assistant/reminders?filter=everything', (route) => {
+    remindersCallCount++;
+    if (remindersCallCount === 1) {
+      route.fulfill({
+        status: 200, contentType: 'application/json', body: JSON.stringify({
+          items: [{ id: 'r1', source: 'manual', title: 'Real Reminder One', priority: 'high', status: 'pending', dueAt: new Date().toISOString() }],
+          counts: { all: 1, today: 1, upcoming: 0, completed: 0, todayCompleted: 0 }
+        })
+      });
+    } else {
+      route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'simulated: Redis connection refused' }) });
+    }
+  });
+  await remPage.goto(base + '/workforce.html', { waitUntil: 'domcontentloaded' });
+  await remPage.waitForTimeout(500);
+  await remPage.click('#hrAssistantBtn');
+  await remPage.waitForTimeout(150);
+  await remPage.click('#hrTodayUpdatesCard');
+  await remPage.waitForTimeout(150);
+  await remPage.click('#hrHubRemindersTile');
+  await remPage.waitForTimeout(200);
+  const remFirstLoadText = await remPage.locator('#hrRemList').textContent();
+  check('Reminders list: a real successful load shows the real row', remFirstLoadText.includes('Real Reminder One'));
+  // Close and reopen (same re-entry path as the initial load above) -
+  // re-triggers loadRemindersPage() via showReminders(), landing on the
+  // mock's 2nd call (the simulated 500).
+  await remPage.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await remPage.waitForTimeout(100);
+  await remPage.click('#hrAssistantBtn');
+  await remPage.waitForTimeout(150);
+  await remPage.click('#hrTodayUpdatesCard');
+  await remPage.waitForTimeout(150);
+  await remPage.click('#hrHubRemindersTile');
+  await remPage.waitForTimeout(200);
+  const remStaleText = await remPage.locator('#hrRemList').textContent();
+  check('Reminders list: a real backend 500 keeps the real row visible with a distinct "Couldn\'t update, Retry" banner - never blanked to "No pending reminders" just because the refresh happened to fail',
+    remStaleText.includes('Real Reminder One') && remStaleText.includes("Couldn't update") && !remStaleText.includes('No pending reminders'));
+  // Retry must actually re-fetch with backoff - same contract as the
+  // Conversations list retry above.
+  await remPage.click('#hrRemRetryBtn');
+  await remPage.waitForTimeout(300);
+  const remCallCountAfterFirstRetry = remindersCallCount;
+  check('Reminders list retry: the first retry tap (no prior recorded failure) re-fetches promptly, with no artificial delay', remCallCountAfterFirstRetry >= 3);
+  await remPage.click('#hrRemRetryBtn');
+  await remPage.waitForTimeout(400);
+  const remCallCountShortlyAfterSecondRetry = remindersCallCount;
+  check('Reminders list retry: the SECOND consecutive retry tap backs off - its own network call has NOT fired yet just 400ms in',
+    remCallCountShortlyAfterSecondRetry === remCallCountAfterFirstRetry);
+  await remPage.waitForTimeout(1000);
+  const remCallCountAfterBackoffWindow = remindersCallCount;
+  check('Reminders list retry: that SAME backed-off retry does eventually actually re-fetch once its backoff window passes',
+    remCallCountAfterBackoffWindow > remCallCountShortlyAfterSecondRetry);
+  await remPage.close();
+
+  // Cold-start failure (nothing cached at all yet) - a fresh page/panel
+  // with the reminders endpoint always failing must show a clear
+  // "Couldn't load reminders, Retry" state, never the ordinary empty-list
+  // text (which would read as "genuinely zero reminders").
+  const coldPage = await browser.newPage({ viewport: { width: 384, height: 800 } });
+  const coldPageErrors = [];
+  coldPage.on('pageerror', (err) => coldPageErrors.push(err.message));
+  await coldPage.route('**/api/**', (route) => {
+    const method = route.request().method();
+    if (method !== 'GET') { route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }); return; }
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], employees: [], count: 0, unreadCount: 0, counts: { all: 0, today: 0, upcoming: 0, completed: 0, todayCompleted: 0 } }) });
+  });
+  await coldPage.route('**/api/workforce/hr-assistant/reminders?filter=everything', (route) => {
+    route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'simulated: Redis connection refused' }) });
+  });
+  await coldPage.goto(base + '/workforce.html', { waitUntil: 'domcontentloaded' });
+  await coldPage.waitForTimeout(500);
+  await coldPage.click('#hrAssistantBtn');
+  await coldPage.waitForTimeout(150);
+  await coldPage.click('#hrTodayUpdatesCard');
+  await coldPage.waitForTimeout(150);
+  await coldPage.click('#hrHubRemindersTile');
+  await coldPage.waitForTimeout(250);
+  const coldRemText = await coldPage.locator('#hrRemList').textContent();
+  check('Reminders list, cold start, backend down: shows a clear "Couldn\'t load reminders, Retry" state, never "No pending reminders"',
+    coldRemText.includes("Couldn't load reminders") && coldRemText.includes('Retry') && !coldRemText.includes('No pending reminders'));
+  check('Reminders list, cold start, backend down: no JS error was thrown', coldPageErrors.length === 0, JSON.stringify(coldPageErrors));
+  await coldPage.close();
+
   // Delivery log (Robustness pass, Pass 2, 2026-11, direct instruction) -
   // smoke test: the icon opens the page, the header/stat cards/chips/
   // list render from a real (mocked) response, and the badge reflects a

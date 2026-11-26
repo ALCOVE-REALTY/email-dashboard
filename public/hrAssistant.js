@@ -7928,6 +7928,41 @@
     return (items || []).map((r) => [r.id, r.status, r.title, r.priority, r.dueAt, r.detail].join('\u0001')).join('\u0002');
   }
   let lastRemListFingerprint = null;
+  // LIVE BUG FIX (2026-11, direct instruction) - a failed/non-2xx reminders
+  // fetch must never be mistaken for "the server really returned zero" (the
+  // same incident class as waAllStale above). true only for the duration of
+  // a failed load; cleared the moment any load succeeds.
+  let remStale = false;
+  function wireRemRetryBtn() {
+    const btn = document.getElementById('hrRemRetryBtn');
+    if (btn) btn.addEventListener('click', () => {
+      btn.disabled = true;
+      btn.textContent = 'Retrying…';
+      retryWithBackoff('reminders', async () => {
+        await loadRemindersPage(activeRemFilter);
+        if (remStale) throw new Error('Reminders retry still failing');
+      }).catch(() => {
+        // A REPEATED failure with the same cached items/filter never
+        // changes renderRemindersData's own fingerprint (speed-fix skip,
+        // see remListFingerprint), so the list area is never rebuilt and
+        // this exact button instance would otherwise stay disabled
+        // forever after its first retry tap - reset it here so a second
+        // retry is still possible. A no-op once a real render replaced it
+        // (the success path, or a fresh cold-failure rebuild).
+        if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Retry'; }
+      });
+    });
+  }
+  // Cold-start failure only (no cached data at all to fall back to) - the
+  // list area becomes a clear "couldn't load" state with Retry, never the
+  // ordinary empty-state text, and badges/chips are left exactly as their
+  // last known-good values (never zeroed out from a failure).
+  function renderRemLoadFailedState() {
+    if (!remList) return;
+    lastRemListFingerprint = null; // force a real rebuild once data does arrive
+    remList.innerHTML = '<div class="wf-rem-empty">Couldn\'t load reminders. <button type="button" class="wf-link-btn" id="hrRemRetryBtn">Retry</button></div>';
+    wireRemRetryBtn();
+  }
 
   function renderRemindersData(data, filter) {
     remItemsById = new Map((data.items || []).map((r) => [r.id, r]));
@@ -7955,13 +7990,26 @@
       });
     }
     if (remList) {
-      const fp = filter + '::' + remListFingerprint(data.items);
+      // remStale folded into the fingerprint so a stale-flag flip alone
+      // (no item change) still forces the banner to actually appear/clear.
+      const fp = filter + '::' + remStale + '::' + remListFingerprint(data.items);
       if (fp !== lastRemListFingerprint) {
         lastRemListFingerprint = fp;
         remList.innerHTML = '';
         if (!data.items.length) {
-          remList.innerHTML = '<div class="wf-rem-empty">' + (isCompletedFilter(filter) ? 'No completed reminders yet.' : 'No pending reminders.') + '</div>';
+          // A failed load must never render identically to a genuine
+          // zero-result state (same incident class as waAllStale/
+          // renderWaAllList) - only ever "No pending reminders" when the
+          // server really returned zero.
+          remList.innerHTML = remStale
+            ? '<div class="wf-rem-empty">Couldn\'t load reminders. <button type="button" class="wf-link-btn" id="hrRemRetryBtn">Retry</button></div>'
+            : '<div class="wf-rem-empty">' + (isCompletedFilter(filter) ? 'No completed reminders yet.' : 'No pending reminders.') + '</div>';
+          if (remStale) wireRemRetryBtn();
         } else {
+          if (remStale) {
+            remList.insertAdjacentHTML('afterbegin', '<div class="wf-comms-stale-banner">Couldn\'t update — <button type="button" class="wf-link-btn" id="hrRemRetryBtn">Retry</button></div>');
+            wireRemRetryBtn();
+          }
           data.items.forEach((r) => remList.appendChild(renderReminderRow(r)));
         }
       }
@@ -8003,10 +8051,30 @@
     try {
       const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=everything');
       data = await resp.json();
+      // LIVE BUG FIX (2026-11, direct instruction) - fetch() only rejects on
+      // a network failure, never on an HTTP error status, so a genuine
+      // backend failure (e.g. the route's own 500 on a KV/Redis outage)
+      // used to parse fine as JSON ({error: ...}, no items/counts at all)
+      // and flow straight through to renderRemindersData as if it were real
+      // data - same incident class as fetchWaAllPage's own !r.ok check.
+      if (!resp.ok) throw new Error((data && data.error) || 'Reminders list read failed');
+      remStale = false;
       if (remMutationSeq === seqAtStart) { pageDataCache.reminders.set('everything', { data, at: Date.now() }); persistMapCache('reminders', pageDataCache.reminders); }
     } catch (err) {
-      if (cached) return; // keep showing the still-valid cached render
-      data = { items: [], counts: { all: 0, today: 0, upcoming: 0, completed: 0, todayCompleted: 0 } };
+      // Never fall back to a fake "zero reminders" shape - that would be
+      // indistinguishable from the server genuinely returning zero. A
+      // still-good cache keeps showing its real rows (now with a stale
+      // banner); with nothing cached at all, the list area shows a clear
+      // "couldn't load" state with Retry instead.
+      remStale = true;
+      if (activeRemFilter !== requestedFilter) return;
+      if (remMutationSeq !== seqAtStart) return;
+      if (cached) {
+        renderRemindersData({ items: bucketReminders(cached.data.items, requestedFilter, new Date()), counts: cached.data.counts }, requestedFilter);
+      } else {
+        renderRemLoadFailedState();
+      }
+      return;
     }
     if (activeRemFilter !== requestedFilter) return; // filter/page changed before this resolved
     if (remMutationSeq !== seqAtStart) return; // a mutation landed mid-flight - a fresh load for it is already underway
