@@ -262,10 +262,27 @@ function buildTablePdfBuffer({ title, subtitle, columns, rows, landscape = true,
       for (let i = 0; i < pageRange.count; i++) {
         doc.switchToPage(pageRange.start + i);
         const footerY = doc.page.height - PAGE_MARGIN + 10;
+        // LIVE BUG FIX (2026-11) - footerY sits 10pt PAST doc.page.maxY()
+        // (height - margins.bottom) on purpose, to land in the blank strip
+        // below the table's own bottom margin. But doc.text() with an
+        // explicit `width` always routes through LineWrapper.wrap(), whose
+        // very first check is `document.y > this.maxY` - true here
+        // regardless of `lineBreak` (that option only affects horizontal
+        // word-wrap, never this vertical-overflow check) - so PDFKit was
+        // pushing a genuinely NEW page for every single footer/page-number
+        // draw (confirmed against node_modules/pdfkit/js/pdfkit.js's own
+        // maxY()/LineWrapper source). Zeroing the bottom margin just for
+        // these two draws moves maxY() to the full page height, so footerY
+        // is comfortably back within bounds - no page ever gets added here.
+        // Restored immediately after so nothing else on this (already
+        // fully-drawn) page sees a different margin than it had before.
+        const savedBottomMargin = doc.page.margins.bottom;
+        doc.page.margins.bottom = 0;
         doc.fontSize(7).font('Helvetica').fillColor(COLOR_META);
         if (footerText) doc.text(footerText, PAGE_MARGIN, footerY, { width: pageWidth / 2, align: 'left', lineBreak: false });
         if (pageNumbers) doc.text('Page ' + (i + 1) + ' of ' + pageRange.count, PAGE_MARGIN, footerY, { width: pageWidth, align: 'right', lineBreak: false });
         doc.fillColor('#000');
+        doc.page.margins.bottom = savedBottomMargin;
       }
     }
 

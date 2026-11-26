@@ -28,6 +28,7 @@
     "check:together-we-can": "node scripts/check-together-we-can.js",
     "check:integrations-ui": "node scripts/check-integrations-ui.js",
     "check:perf": "node scripts/check-subh-pages-open-speed.js",
+    "check:pdf-report-pagination": "node scripts/check-pdf-report-pagination.js",
     "check:load": "node scripts/load-test-gateway-scheduler.js"
   },
   "engines": {

@@ -70,6 +70,7 @@ const FLAKY_LOG_PATH = path.join(__dirname, 'flaky-tests.md');
 const DETERMINISTIC_SUITES = [
   'check-data-access.js',
   'check-whatsapp-document-send.js',
+  'check-pdf-report-pagination.js',
   'check-hr-report-service.js',
   'check-redis-health.js',
   'check-kv-instrumentation.js',
