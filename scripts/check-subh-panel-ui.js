@@ -1677,7 +1677,13 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   const yearBtnBox = await page.locator('[data-range="year"]').boundingBox();
   const todayChipBox = await page.locator('[data-range="today"]').boundingBox();
   const yearRowGap = (yearChipBox && aiUsageChipsBox) ? (yearChipBox.y - (aiUsageChipsBox.y + aiUsageChipsBox.height)) : null;
-  check('AI usage: "This year" is the SAME size as Today/This week/This month (not stretched full-width)', Boolean(yearBtnBox) && Boolean(todayChipBox) && Math.abs(yearBtnBox.width - todayChipBox.width) < 40, 'got yearWidth=' + (yearBtnBox && yearBtnBox.width) + ' todayWidth=' + (todayChipBox && todayChipBox.width));
+  // LIVE BUG FIX (2026-11) - tightened from a 40px tolerance (which the
+  // OLD `flex: none` bug also happened to pass under, just from the
+  // OPPOSITE direction: content-fit sizing made it narrower, not wider,
+  // than its siblings). An explicit width computed the same way the 3
+  // flex:1 siblings divide their own row (see wi-theme.css's own comment)
+  // should match almost exactly - sub-pixel tolerance only.
+  check('AI usage: "This year" is the SAME size as Today/This week/This month (exact match, not just "not stretched full-width")', Boolean(yearBtnBox) && Boolean(todayChipBox) && Math.abs(yearBtnBox.width - todayChipBox.width) < 1, 'got yearWidth=' + (yearBtnBox && yearBtnBox.width) + ' todayWidth=' + (todayChipBox && todayChipBox.width));
   check('AI usage: "This year" is left-aligned directly under "Today" (same left edge as the row above)', Boolean(yearBtnBox) && Boolean(todayChipBox) && Math.abs(yearBtnBox.x - todayChipBox.x) < 3, 'got yearX=' + (yearBtnBox && yearBtnBox.x) + ' todayX=' + (todayChipBox && todayChipBox.x));
   // .wf-comms-page is a flex column with its own 16px `gap` between every
   // direct child - the OLD markup added an extra 8px margin-top on top of
@@ -1757,6 +1763,45 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
     });
   });
 
+  // UI fix (2026-11), direct instruction - the 4 compact summary cards
+  // (Process & restarts / Incoming pipeline / Gateway diagnostics /
+  // Maintenance jobs) that replaced the long inline text sections, plus
+  // the new "Incoming pipeline: OK/STUCK at <stage>" aggregate. A real
+  // "problem" scenario (mirroring workforceRoutes.js's own response
+  // shape) exercises every red/amber summary and its matching detail-
+  // sheet content in one pass.
+  const sixMinAgo = Date.now() - 6 * 60 * 1000;
+  function systemHealthFixture(overrides) {
+    return Object.assign({
+      metrics: { eventLoopLagMs: 5, rssMb: 100, uptimeSec: 600, kvLatencyP95Ms: 10, ts: Date.now() },
+      processStart: { startsToday: 19, last: { ts: sixMinAgo, commitId: 'abc123' } },
+      recentShutdowns: [{ at: Date.now() - 3600000, uptimeMs: 7200000, kind: 'signal', memory: { rssMb: 100, heapUsedMb: 50 } }],
+      recentPollSkips: [{ at: Date.now() - 60000, contact: '+91XXXXXX1234', reason: 'fixture-skip-reason' }],
+      kvCommandStats: [{ command: 'get', callsLast5Min: 10, p50Ms: 5, p95Ms: 12 }],
+      jobHeartbeats: [
+        { name: 'fixture-job-healthy', lastSuccessAt: Date.now() - 60000 },
+        { name: 'fixture-job-failing', lastError: 'fixture-job-error', lastEndAt: Date.now(), lastSuccessAt: null, consecutiveFailures: 3 }
+      ],
+      gatewayV1: {
+        session: { status: { status: 'connected' }, decryptionFailures: 0, duplicatesSuppressed: 0 },
+        webhookRegistered: true,
+        diagnostics: {
+          webhookSecretPresent: true,
+          lastWebhookHit: { at: Date.now() - 120000, outcome: 'ok' },
+          lastPoll: { at: Date.now() - 300000, ok: false, error: 'fixture-poll-timeout', cursor: 'c1' },
+          lastMessageWrittenToFeed: { at: Date.now() - 100000 },
+          lastMessageRepliedTo: { at: Date.now() - 90000 },
+          gatewayLastReceivedAt: Date.now() - 80000, gatewayLastSentAt: Date.now() - 70000
+        }
+      },
+      incomingPipeline: { ok: false, stage: 'reply pipeline', error: 'fixture: a message arrived 20 min ago and still has no reply', sampleAt: Date.now() }
+    }, overrides);
+  }
+  let systemHealthFixtureState = systemHealthFixture();
+  await page.route('**/api/workforce/hr-assistant/system-health', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(systemHealthFixtureState) });
+  });
+
   // NOTE: no explicit closePanel() here - see the Site names section above.
   const backupsErrBefore = consoleErrors.length + pageErrors.length;
   await page.evaluate(() => { window.__hrAssistantOpenDataBackups(); });
@@ -1776,6 +1821,93 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   check('Data & backups: both fake recent backups render as rows', recentCards === 2, 'got: ' + recentCards);
   const dailyStatusText = await page.locator('#hrBackupDailyStatus').textContent().catch(() => null);
   check('Data & backups: "last successful backup" status line renders from the fake dailyState', (dailyStatusText || '').includes('Last successful backup'), 'got: ' + JSON.stringify(dailyStatusText));
+
+  // UI fix (2026-11), direct instruction - the 4 compact cards' summary
+  // text and color, against the "problem" fixture set up above.
+  const processRestartsSubText = await page.locator('#hrProcessRestartsSub').textContent().catch(() => null);
+  check('Process & restarts card: summary line reads "Started Xm ago · N restarts today"', (processRestartsSubText || '').includes('Started 6m ago') && (processRestartsSubText || '').includes('19 restarts today'), 'got: ' + JSON.stringify(processRestartsSubText));
+  const incomingPipelineSubText = await page.locator('#hrIncomingPipelineSub').textContent().catch(() => null);
+  const incomingPipelineSubColor = await page.locator('#hrIncomingPipelineSub').evaluate((el) => el.style.color);
+  check('Incoming pipeline card: STUCK summary names the real stage and is colored (red/amber visible without opening the card)', incomingPipelineSubText === 'STUCK at reply pipeline' && Boolean(incomingPipelineSubColor), 'got text: ' + JSON.stringify(incomingPipelineSubText) + ' color: ' + JSON.stringify(incomingPipelineSubColor));
+  const gatewayDiagSubText = await page.locator('#hrGatewayDiagSub').textContent().catch(() => null);
+  const gatewayDiagSubColor = await page.locator('#hrGatewayDiagSub').evaluate((el) => el.style.color);
+  check('Gateway diagnostics card: summary reads "Last webhook hit Xm ago · Issue" (a failed poll tips it, visible without opening)', (gatewayDiagSubText || '').includes('Last webhook hit') && (gatewayDiagSubText || '').includes('Issue') && Boolean(gatewayDiagSubColor), 'got text: ' + JSON.stringify(gatewayDiagSubText) + ' color: ' + JSON.stringify(gatewayDiagSubColor));
+  const maintenanceJobsSubText = await page.locator('#hrMaintenanceJobsSub').textContent().catch(() => null);
+  const maintenanceJobsSubColor = await page.locator('#hrMaintenanceJobsSub').evaluate((el) => el.style.color);
+  check('Maintenance jobs card: "N jobs failing" (red) when a real job is failing', maintenanceJobsSubText === '1 job failing' && Boolean(maintenanceJobsSubColor), 'got text: ' + JSON.stringify(maintenanceJobsSubText) + ' color: ' + JSON.stringify(maintenanceJobsSubColor));
+
+  // Each card opens its own detail sheet with the real underlying content
+  // (the SAME render functions as before, just relocated) - tap, assert,
+  // close, one at a time.
+  await page.click('#hrProcessRestartsCard');
+  await page.waitForTimeout(150);
+  check('Process & restarts: detail sheet opens', await page.locator('#hrProcessRestartsSheet').isVisible());
+  const processRestartsBodyText = await page.locator('#hrProcessRestartsSheet').textContent().catch(() => null);
+  check('Process & restarts: detail sheet shows commit, recent restarts AND the folded-in KV command stats', (processRestartsBodyText || '').includes('commit abc123') && (processRestartsBodyText || '').includes('Recent restarts') && (processRestartsBodyText || '').includes('KV commands'), 'got: ' + JSON.stringify(processRestartsBodyText));
+  await page.click('#hrProcessRestartsCloseBtn');
+  await page.waitForTimeout(350);
+  check('Process & restarts: detail sheet closes', !(await page.locator('#hrProcessRestartsSheet').isVisible()));
+
+  await page.click('#hrIncomingPipelineCard');
+  await page.waitForTimeout(150);
+  check('Incoming pipeline: detail sheet opens', await page.locator('#hrIncomingPipelineSheet').isVisible());
+  const incomingPipelineBodyText = await page.locator('#hrIncomingPipelineSheet').textContent().catch(() => null);
+  check('Incoming pipeline: detail sheet shows the real recent skipped-messages list', (incomingPipelineBodyText || '').includes('fixture-skip-reason'), 'got: ' + JSON.stringify(incomingPipelineBodyText));
+  await page.click('#hrIncomingPipelineCloseBtn');
+  await page.waitForTimeout(350);
+  check('Incoming pipeline: detail sheet closes', !(await page.locator('#hrIncomingPipelineSheet').isVisible()));
+
+  await page.click('#hrGatewayDiagCard');
+  await page.waitForTimeout(150);
+  check('Gateway diagnostics: detail sheet opens', await page.locator('#hrGatewayDiagSheet').isVisible());
+  const gatewayDiagBodyText = await page.locator('#hrGatewayDiagSheet').textContent().catch(() => null);
+  check('Gateway diagnostics: detail sheet shows webhook secret/last hit/last poll/feed/reply/gateway last received-sent', (gatewayDiagBodyText || '').includes('Webhook secret on file: yes') && (gatewayDiagBodyText || '').includes('fixture-poll-timeout') && (gatewayDiagBodyText || '').includes('last received/sent'), 'got: ' + JSON.stringify(gatewayDiagBodyText));
+  await page.click('#hrGatewayDiagCloseBtn');
+  await page.waitForTimeout(350);
+  check('Gateway diagnostics: detail sheet closes', !(await page.locator('#hrGatewayDiagSheet').isVisible()));
+
+  await page.click('#hrMaintenanceJobsCard');
+  await page.waitForTimeout(150);
+  check('Maintenance jobs: detail sheet opens', await page.locator('#hrMaintenanceJobsSheet').isVisible());
+  const maintenanceJobsBodyText = await page.locator('#hrMaintenanceJobsSheet').textContent().catch(() => null);
+  check('Maintenance jobs: detail sheet shows the full job list, including the failing job\'s own error', (maintenanceJobsBodyText || '').includes('fixture-job-healthy') && (maintenanceJobsBodyText || '').includes('fixture-job-failing') && (maintenanceJobsBodyText || '').includes('fixture-job-error'), 'got: ' + JSON.stringify(maintenanceJobsBodyText));
+  await page.click('#hrMaintenanceJobsCloseBtn');
+  await page.waitForTimeout(350);
+  check('Maintenance jobs: detail sheet closes', !(await page.locator('#hrMaintenanceJobsSheet').isVisible()));
+
+  // Now the opposite scenario - everything healthy - so "OK"/"N jobs OK"
+  // is proven too, not just the colored failure path. Re-opening the page
+  // re-triggers loadSystemHealthCard() against the swapped fixture.
+  systemHealthFixtureState = systemHealthFixture({
+    incomingPipeline: { ok: true, stage: null, error: null, sampleAt: Date.now() },
+    jobHeartbeats: [{ name: 'fixture-job-healthy', lastSuccessAt: Date.now() - 60000 }],
+    gatewayV1: {
+      session: { status: { status: 'connected' }, decryptionFailures: 0, duplicatesSuppressed: 0 },
+      webhookRegistered: true,
+      diagnostics: {
+        webhookSecretPresent: true,
+        lastWebhookHit: { at: Date.now() - 60000, outcome: 'ok' },
+        lastPoll: { at: Date.now() - 60000, ok: true, totalSeen: 3, totalKept: 3, cursor: 'c2' },
+        lastMessageWrittenToFeed: { at: Date.now() - 50000 },
+        lastMessageRepliedTo: { at: Date.now() - 40000 },
+        gatewayLastReceivedAt: Date.now() - 30000, gatewayLastSentAt: Date.now() - 20000
+      }
+    }
+  });
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(150);
+  await page.evaluate(() => { window.__hrAssistantOpenDataBackups(); });
+  await page.waitForTimeout(250);
+  const incomingPipelineOkText = await page.locator('#hrIncomingPipelineSub').textContent().catch(() => null);
+  const incomingPipelineOkColor = await page.locator('#hrIncomingPipelineSub').evaluate((el) => el.style.color);
+  check('Incoming pipeline card: "OK", uncolored, once the underlying checks are healthy', incomingPipelineOkText === 'OK' && !incomingPipelineOkColor, 'got text: ' + JSON.stringify(incomingPipelineOkText) + ' color: ' + JSON.stringify(incomingPipelineOkColor));
+  const maintenanceJobsOkText = await page.locator('#hrMaintenanceJobsSub').textContent().catch(() => null);
+  const maintenanceJobsOkColor = await page.locator('#hrMaintenanceJobsSub').evaluate((el) => el.style.color);
+  check('Maintenance jobs card: "N jobs OK", uncolored, once nothing is failing', maintenanceJobsOkText === '1 job OK' && !maintenanceJobsOkColor, 'got text: ' + JSON.stringify(maintenanceJobsOkText) + ' color: ' + JSON.stringify(maintenanceJobsOkColor));
+  const gatewayDiagOkText = await page.locator('#hrGatewayDiagSub').textContent().catch(() => null);
+  const gatewayDiagOkColor = await page.locator('#hrGatewayDiagSub').evaluate((el) => el.style.color);
+  check('Gateway diagnostics card: "... · OK", uncolored, once the poll/hit are both healthy', (gatewayDiagOkText || '').endsWith('OK') && !gatewayDiagOkColor, 'got text: ' + JSON.stringify(gatewayDiagOkText) + ' color: ' + JSON.stringify(gatewayDiagOkColor));
+  await page.unroute('**/api/workforce/hr-assistant/system-health');
 
   await page.click('#hrBackupNowBtn');
   await page.waitForTimeout(400);

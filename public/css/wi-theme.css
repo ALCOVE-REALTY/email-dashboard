@@ -2180,7 +2180,15 @@ body { background: var(--wi-bg); }
    total) - that extra margin is removed entirely here, leaving just the
    same 16px spacing every other section on this page already uses
    (reduced from 24px, and consistent rather than a one-off wider gap). */
-#hrAiUsageChipsYear .wf-rem-chip { flex: none; }
+/* LIVE BUG FIX (2026-11) - `flex: none` sized it to its own CONTENT
+   instead ("This year" is narrower text than its siblings), still a
+   mismatch, just the opposite direction from the original 100%-stretch
+   bug. An explicit width, computed the same way 3 flex:1 chips sharing
+   their row divide it (gap 8px, 3 chips -> (100% - 2*8px)/3), matches
+   #hrAiUsageChips's real per-chip width exactly, at any viewport width -
+   both rows are direct siblings of the same full-width page container, so
+   "100%" means the identical basis for both. */
+#hrAiUsageChipsYear .wf-rem-chip { flex: none; width: calc((100% - 16px) / 3); }
 .wf-rem-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; font-weight: 800; color: var(--wi-ink); padding: 0 2px; }
 /* Task 3a (2026-11) - the normal label/Clear/count trio and the Cancel/
    Clear (N) selection-mode pair occupy the SAME line, one hidden while

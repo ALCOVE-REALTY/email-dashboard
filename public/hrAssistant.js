@@ -312,6 +312,29 @@
   const healthWaV1DupesEl = document.getElementById('hrHealthWaV1Dupes');
   const healthWaV1WebhookEl = document.getElementById('hrHealthWaV1Webhook');
   const healthWaV1DiagEl = document.getElementById('hrHealthWaV1Diag');
+  // UI fix (2026-11), direct instruction - the 4 compact summary cards
+  // (and their read-only detail sheets) that replaced the long inline
+  // text sections above on the Data & Backups page.
+  const processRestartsCard = document.getElementById('hrProcessRestartsCard');
+  const processRestartsSub = document.getElementById('hrProcessRestartsSub');
+  const processRestartsBackdrop = document.getElementById('hrProcessRestartsBackdrop');
+  const processRestartsSheet = document.getElementById('hrProcessRestartsSheet');
+  const processRestartsCloseBtn = document.getElementById('hrProcessRestartsCloseBtn');
+  const incomingPipelineCard = document.getElementById('hrIncomingPipelineCard');
+  const incomingPipelineSub = document.getElementById('hrIncomingPipelineSub');
+  const incomingPipelineBackdrop = document.getElementById('hrIncomingPipelineBackdrop');
+  const incomingPipelineSheet = document.getElementById('hrIncomingPipelineSheet');
+  const incomingPipelineCloseBtn = document.getElementById('hrIncomingPipelineCloseBtn');
+  const gatewayDiagCard = document.getElementById('hrGatewayDiagCard');
+  const gatewayDiagSub = document.getElementById('hrGatewayDiagSub');
+  const gatewayDiagBackdrop = document.getElementById('hrGatewayDiagBackdrop');
+  const gatewayDiagSheet = document.getElementById('hrGatewayDiagSheet');
+  const gatewayDiagCloseBtn = document.getElementById('hrGatewayDiagCloseBtn');
+  const maintenanceJobsCard = document.getElementById('hrMaintenanceJobsCard');
+  const maintenanceJobsSub = document.getElementById('hrMaintenanceJobsSub');
+  const maintenanceJobsBackdrop = document.getElementById('hrMaintenanceJobsBackdrop');
+  const maintenanceJobsSheet = document.getElementById('hrMaintenanceJobsSheet');
+  const maintenanceJobsCloseBtn = document.getElementById('hrMaintenanceJobsCloseBtn');
   // Runbook (Part A point 6, 2026-11-25, direct instruction).
   const openRunbookBtn = document.getElementById('hrOpenRunbookBtn');
   const runbookItTemplateEl = document.getElementById('hrRunbookItTemplate');
@@ -5724,8 +5747,15 @@
   // only check on my phone." Both come back on the same system-health
   // response the metrics above already use - see GET
   // /hr-assistant/system-health (src/workforceRoutes.js).
+  // UI fix (2026-11) - extracted so the new "Maintenance jobs" summary
+  // card (renderMaintenanceJobsSummary below) counts failing jobs with
+  // the EXACT same predicate the per-job row already uses, rather than a
+  // second hand-copied version that could drift from it.
+  function isJobFailing(h) {
+    return Boolean(h.lastError) && (!h.lastSuccessAt || (h.lastEndAt && h.lastEndAt > h.lastSuccessAt));
+  }
   function jobHeartbeatRowHtml(h) {
-    const failing = Boolean(h.lastError) && (!h.lastSuccessAt || (h.lastEndAt && h.lastEndAt > h.lastSuccessAt));
+    const failing = isJobFailing(h);
     const successLine = h.lastSuccessAt ? ('Last success ' + actionNeededAgeLabel(Date.now() - h.lastSuccessAt) + ' ago') : 'Never succeeded yet';
     const errorLine = failing ? ('<div class="wf-auto-hint" style="color:var(--wf-danger,#c0392b)">' + escapeHtml(h.lastError) + '</div>') : '';
     return '<div class="wf-auto-task-card">' +
@@ -5740,6 +5770,75 @@
     if (!jobHeartbeats || !jobHeartbeats.length) { jobHeartbeatsList.innerHTML = '<div class="wf-rem-empty">No sample yet.</div>'; return; }
     jobHeartbeatsList.innerHTML = jobHeartbeats.map(jobHeartbeatRowHtml).join('');
   }
+  // UI fix (2026-11), direct instruction - compact summary-card helpers
+  // for the Data & Backups page. Read-only sheets, so no fetch-on-open is
+  // needed - they just reveal content the page already fetched and
+  // rendered into the (now relocated, same ids) elements inside them.
+  function openReadOnlySheet(backdrop, sheet) {
+    if (!sheet) return;
+    if (backdrop) backdrop.hidden = false;
+    sheet.hidden = false;
+    requestAnimationFrame(() => { if (backdrop) backdrop.classList.add('open'); sheet.classList.add('open'); });
+  }
+  function closeReadOnlySheet(backdrop, sheet) {
+    if (backdrop) backdrop.classList.remove('open');
+    if (sheet) sheet.classList.remove('open');
+    setTimeout(() => { if (backdrop) backdrop.hidden = true; if (sheet) sheet.hidden = true; }, 280);
+  }
+  // Red/amber summary visible without opening the card, per direct
+  // instruction - a plain inline color (same tokens .wf-rem-pill.high/
+  // .wf-comms-stale-banner already use elsewhere), cleared back to the
+  // default ink color for the "nothing wrong" case.
+  function setCardSubTone(el, tone) {
+    if (!el) return;
+    el.style.color = tone === 'danger' ? 'var(--wi-red-700)' : tone === 'warn' ? 'var(--wi-yellow-700)' : '';
+  }
+  function renderProcessRestartsSummary(processStart) {
+    if (!processRestartsSub) return;
+    if (!processStart || !processStart.last) { processRestartsSub.textContent = 'No sample yet.'; setCardSubTone(processRestartsSub, null); return; }
+    const startsToday = typeof processStart.startsToday === 'number' ? processStart.startsToday : null;
+    const age = actionNeededAgeLabel(Date.now() - processStart.last.ts);
+    processRestartsSub.textContent = 'Started ' + age + ' ago' + (startsToday !== null ? (' · ' + startsToday + ' restart' + (startsToday === 1 ? '' : 's') + ' today') : '');
+    setCardSubTone(processRestartsSub, null);
+  }
+  // Incoming pipeline (2026-11), direct instruction - "OK" / "STUCK at
+  // <stage>", a NEW aggregate derived server-side (see
+  // systemHealthMonitor.js's own getIncomingPipelineStatus) from existing
+  // signals (gateway connection, poll-loop heartbeat, reply-pipeline-
+  // stuck check) - this just renders whatever that already decided.
+  function renderIncomingPipelineSummary(incomingPipeline) {
+    if (!incomingPipelineSub) return;
+    if (!incomingPipeline || incomingPipeline.ok === null || incomingPipeline.ok === undefined) {
+      incomingPipelineSub.textContent = 'No sample yet.'; setCardSubTone(incomingPipelineSub, null); return;
+    }
+    if (incomingPipeline.ok) { incomingPipelineSub.textContent = 'OK'; setCardSubTone(incomingPipelineSub, null); return; }
+    incomingPipelineSub.textContent = 'STUCK at ' + incomingPipeline.stage;
+    setCardSubTone(incomingPipelineSub, 'danger');
+  }
+  function renderMaintenanceJobsSummary(jobHeartbeats) {
+    if (!maintenanceJobsSub) return;
+    if (!jobHeartbeats || !jobHeartbeats.length) { maintenanceJobsSub.textContent = 'No sample yet.'; setCardSubTone(maintenanceJobsSub, null); return; }
+    const failingCount = jobHeartbeats.filter(isJobFailing).length;
+    if (failingCount === 0) {
+      maintenanceJobsSub.textContent = jobHeartbeats.length + ' job' + (jobHeartbeats.length === 1 ? '' : 's') + ' OK';
+      setCardSubTone(maintenanceJobsSub, null);
+      return;
+    }
+    maintenanceJobsSub.textContent = failingCount + ' job' + (failingCount === 1 ? '' : 's') + ' failing';
+    setCardSubTone(maintenanceJobsSub, 'danger');
+  }
+  if (processRestartsCard) processRestartsCard.addEventListener('click', () => openReadOnlySheet(processRestartsBackdrop, processRestartsSheet));
+  if (processRestartsCloseBtn) processRestartsCloseBtn.addEventListener('click', () => closeReadOnlySheet(processRestartsBackdrop, processRestartsSheet));
+  if (processRestartsBackdrop) processRestartsBackdrop.addEventListener('click', () => closeReadOnlySheet(processRestartsBackdrop, processRestartsSheet));
+  if (incomingPipelineCard) incomingPipelineCard.addEventListener('click', () => openReadOnlySheet(incomingPipelineBackdrop, incomingPipelineSheet));
+  if (incomingPipelineCloseBtn) incomingPipelineCloseBtn.addEventListener('click', () => closeReadOnlySheet(incomingPipelineBackdrop, incomingPipelineSheet));
+  if (incomingPipelineBackdrop) incomingPipelineBackdrop.addEventListener('click', () => closeReadOnlySheet(incomingPipelineBackdrop, incomingPipelineSheet));
+  if (gatewayDiagCard) gatewayDiagCard.addEventListener('click', () => openReadOnlySheet(gatewayDiagBackdrop, gatewayDiagSheet));
+  if (gatewayDiagCloseBtn) gatewayDiagCloseBtn.addEventListener('click', () => closeReadOnlySheet(gatewayDiagBackdrop, gatewayDiagSheet));
+  if (gatewayDiagBackdrop) gatewayDiagBackdrop.addEventListener('click', () => closeReadOnlySheet(gatewayDiagBackdrop, gatewayDiagSheet));
+  if (maintenanceJobsCard) maintenanceJobsCard.addEventListener('click', () => openReadOnlySheet(maintenanceJobsBackdrop, maintenanceJobsSheet));
+  if (maintenanceJobsCloseBtn) maintenanceJobsCloseBtn.addEventListener('click', () => closeReadOnlySheet(maintenanceJobsBackdrop, maintenanceJobsSheet));
+  if (maintenanceJobsBackdrop) maintenanceJobsBackdrop.addEventListener('click', () => closeReadOnlySheet(maintenanceJobsBackdrop, maintenanceJobsSheet));
   function renderProcessStart(processStart) {
     if (healthRestartsEl) healthRestartsEl.textContent = (processStart && typeof processStart.startsToday === 'number') ? String(processStart.startsToday) : '—';
     if (!healthProcessLineEl) return;
@@ -5817,10 +5916,25 @@
       if (healthWaV1WebhookEl) healthWaV1WebhookEl.textContent = gatewayV1.webhookRegistered ? 'Registered' : 'Not registered';
     } catch (err) { /* the 4 stat cards above are best-effort - the diagnostics block below is independent */ }
     try {
+      // UI fix (2026-11) - the diagnostics CARD is now a separate element
+      // from healthWaV1El (pulled out so the 4 stat cards above stay
+      // exactly as they were), but gated the SAME way (any sign the new
+      // gateway is configured) so it appears/disappears in lockstep with
+      // them rather than ever showing with nothing real behind it.
+      const hasAnySignal = Boolean(gatewayV1 && gatewayV1.session) || Boolean(gatewayV1 && gatewayV1.webhookRegistered) || Boolean(gatewayV1 && gatewayV1.diagnostics);
+      if (gatewayDiagCard) gatewayDiagCard.hidden = !hasAnySignal;
       if (!healthWaV1DiagEl) return;
       const diag = gatewayV1 && gatewayV1.diagnostics;
-      if (!diag) { healthWaV1DiagEl.textContent = 'No diagnostics yet.'; return; }
-      if (diag.error) { healthWaV1DiagEl.textContent = 'Diagnostics error: ' + diag.error; return; }
+      if (!diag) {
+        healthWaV1DiagEl.textContent = 'No diagnostics yet.';
+        if (gatewayDiagSub) { gatewayDiagSub.textContent = 'No diagnostics yet.'; setCardSubTone(gatewayDiagSub, null); }
+        return;
+      }
+      if (diag.error) {
+        healthWaV1DiagEl.textContent = 'Diagnostics error: ' + diag.error;
+        if (gatewayDiagSub) { gatewayDiagSub.textContent = 'Diagnostics error'; setCardSubTone(gatewayDiagSub, 'danger'); }
+        return;
+      }
       const hit = diag.lastWebhookHit;
       const poll = diag.lastPoll;
       const lines = [
@@ -5832,8 +5946,20 @@
         'Gateway\'s own last received/sent: ' + (diag.gatewayLastReceivedAt ? ageLabelOrDash(diag.gatewayLastReceivedAt) : '—') + ' / ' + (diag.gatewayLastSentAt ? ageLabelOrDash(diag.gatewayLastSentAt) : '—')
       ];
       healthWaV1DiagEl.textContent = lines.join('\n');
+      // Summary line format per direct instruction: "Last webhook hit 0m
+      // ago · OK". "OK" here means a webhook hit was actually recorded and
+      // this diagnostics read itself had no error - a poll failure alone
+      // (poll.ok false) still tips it to amber, visible without opening.
+      if (gatewayDiagSub) {
+        const hitLabel = hit ? (ageLabelOrDash(hit.at) + (hit.outcome && hit.outcome !== 'ok' ? (' · ' + hit.outcome) : '')) : 'never';
+        const pollFailed = Boolean(poll) && poll.ok === false;
+        const hitFailed = Boolean(hit) && hit.outcome && hit.outcome !== 'ok';
+        gatewayDiagSub.textContent = 'Last webhook hit ' + hitLabel + ' · ' + ((pollFailed || hitFailed) ? 'Issue' : 'OK');
+        setCardSubTone(gatewayDiagSub, (pollFailed || hitFailed) ? 'warn' : null);
+      }
     } catch (err) {
       if (healthWaV1DiagEl) healthWaV1DiagEl.textContent = 'Could not render gateway diagnostics.';
+      if (gatewayDiagSub) { gatewayDiagSub.textContent = 'Could not load diagnostics.'; setCardSubTone(gatewayDiagSub, 'danger'); }
     }
   }
   async function loadSystemHealthCard() {
@@ -5842,10 +5968,13 @@
       const data = await fetch('/api/workforce/hr-assistant/system-health').then((res) => res.json());
       const m = data && data.metrics;
       try { renderProcessStart(data && data.processStart); } catch (err) { /* independent of the rest */ }
+      try { renderProcessRestartsSummary(data && data.processStart); } catch (err) { /* independent of the rest */ }
       try { renderRecentShutdowns(data && data.recentShutdowns); } catch (err) { /* independent of the rest */ }
       try { renderRecentPollSkips(data && data.recentPollSkips); } catch (err) { /* independent of the rest */ }
+      try { renderIncomingPipelineSummary(data && data.incomingPipeline); } catch (err) { /* independent of the rest */ }
       try { renderKvCommandStats(data && data.kvCommandStats); } catch (err) { /* independent of the rest */ }
       try { renderJobHeartbeatsList(data && data.jobHeartbeats); } catch (err) { /* independent of the rest */ }
+      try { renderMaintenanceJobsSummary(data && data.jobHeartbeats); } catch (err) { /* independent of the rest */ }
       // LIVE INCIDENT (2026-11-23) - moved AFTER the core metrics render
       // below (was before) and wrapped here too, on top of its own
       // internal try/catch, so a problem rendering the new gateway block

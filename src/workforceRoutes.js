@@ -3277,7 +3277,15 @@ router.get('/hr-assistant/system-health', async (req, res) => {
   // the card never adds load" rule as everything else on this route.
   let kvCommandStats = [];
   try { kvCommandStats = require('./kvInstrumentation').getKvCommandStats(); } catch (err) { kvCommandStats = []; }
-  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, recentShutdowns, recentPollSkips, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats(), gatewayV1: gatewayV1Info, webhookDeadLetters, kvCommandStats });
+  // UI fix (2026-11), direct instruction - "Incoming pipeline: OK/STUCK at
+  // <stage>" for the Data & Backups page's new compact card. Same
+  // "viewing the card never adds load" rule as everything else on this
+  // route - getIncomingPipelineStatus() is a pure in-memory read of
+  // whatever runHealthCheck's own 2-minute tick last found, never a fresh
+  // check of its own.
+  let incomingPipeline = { ok: null, stage: null, error: null, sampleAt: null };
+  try { incomingPipeline = systemHealthMonitor.getIncomingPipelineStatus(); } catch (err) { /* best effort */ }
+  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, recentShutdowns, recentPollSkips, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats(), gatewayV1: gatewayV1Info, webhookDeadLetters, kvCommandStats, incomingPipeline });
 });
 // HARDENING (2026-11-24), direct instruction, point 1 - manual retry for
 // one dead-letter entry (identified by its position in the list the GET

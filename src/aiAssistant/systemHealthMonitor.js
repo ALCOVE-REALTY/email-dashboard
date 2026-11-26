@@ -133,6 +133,33 @@ function getLatestMetrics() { return latestMetrics; }
 let latestGatewayV1Session = null;
 function getLatestGatewayV1Session() { return latestGatewayV1Session; }
 
+// UI fix (2026-11), direct instruction - "Incoming pipeline: OK / STUCK at
+// <stage>" aggregate status for the Data & Backups page's new compact
+// card. Same "never trigger a fresh check just from viewing the card"
+// rule as getLatestGatewayV1Session above - this is a cheap in-memory
+// read of whatever runHealthCheck's own 2-minute tick last found, built
+// from the exact checks that tick already runs for alerting (gateway
+// connection, the poll-loop heartbeat, the reply-pipeline-stuck check),
+// never a fresh live check of its own.
+let latestIncomingPipelineChecks = null;
+function getIncomingPipelineStatus() {
+  if (!latestIncomingPipelineChecks) return { ok: null, stage: null, error: null, sampleAt: null };
+  const { gateway, schedulerHeartbeat, replyPipeline, gatewayV1Session, ts } = latestIncomingPipelineChecks;
+  // Order matches the real pipeline's own order (gateway receives ->
+  // poll loop picks it up -> reply pipeline processes it) - the FIRST
+  // failing stage is the one actually worth surfacing, not every stage a
+  // genuine upstream failure would also make look bad.
+  const stages = [
+    { stage: 'gateway connection', result: gateway },
+    { stage: 'poll loop', result: schedulerHeartbeat },
+    { stage: 'reply pipeline', result: replyPipeline }
+  ];
+  if (gatewayV1Session) stages.push({ stage: 'gateway v1 session', result: gatewayV1Session });
+  const failing = stages.find((s) => s.result && !s.result.ok);
+  if (failing) return { ok: false, stage: failing.stage, error: failing.result.error, sampleAt: ts };
+  return { ok: true, stage: null, error: null, sampleAt: ts };
+}
+
 // A fresh, raw client - deliberately NOT whatsappAssistant.js's own
 // lazily-cached one, so this always re-resolves the CURRENT env vars
 // rather than a client built once at an earlier (possibly different)
@@ -752,6 +779,7 @@ async function runHealthCheck() {
   if (!aiFallbackStreak.ok) failures.push(aiFallbackStreak.error);
   if (!gatewayV1Session.ok) failures.push(gatewayV1Session.error);
   latestGatewayV1Session = gatewayV1Session;
+  latestIncomingPipelineChecks = { gateway, schedulerHeartbeat, replyPipeline, gatewayV1Session, ts: Date.now() };
   const isFailing = failures.length > 0;
   const now = Date.now();
   const debounce = await getAlertDebounceState();
@@ -840,7 +868,7 @@ async function runHealthCheck() {
 
 module.exports = {
   runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat, checkSendFlushHeartbeat, checkFailedSends,
-  checkKvLatency, checkEventLoopLag, checkAiFallbackStreak, checkGatewayV1Session, getLatestGatewayV1Session, startMetricsLog, getLatestMetrics, recordKvLatency, kvLatencyP95Ms,
+  checkKvLatency, checkEventLoopLag, checkAiFallbackStreak, checkGatewayV1Session, getLatestGatewayV1Session, getIncomingPipelineStatus, startMetricsLog, getLatestMetrics, recordKvLatency, kvLatencyP95Ms,
   getAlertDebounceState, setAlertDebounceState,
   isGatewayConsecutivelyBad
 };
