@@ -3027,8 +3027,7 @@
       });
     }
     if (attnCountLabel) {
-      const label = attnState.status === 'all' ? 'total' : attnState.status.replace('_', ' ');
-      attnCountLabel.textContent = (data.items || []).length + ' ' + label;
+      attnCountLabel.textContent = (data.items || []).length + ' ' + attnState.status.replace('_', ' ');
     }
     renderAttnList(data.items || []);
   }

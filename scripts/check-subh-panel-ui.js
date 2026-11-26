@@ -580,6 +580,25 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   check('Attendance Requests: no JS error was thrown rendering the list', attnErrAfter === attnErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(attnErrBefore).concat(pageErrors.slice(attnErrBefore))));
 
+  // HARDENING (2026-11-25, direct instruction), Part B item 5 - "remove
+  // the 'All' status chip (keep In progress / Completed / HR to
+  // decide). Also fix the layout so chips wrap and the page never
+  // scrolls sideways on mobile ('0 in progress' is clipped on the
+  // left)." The "All" 4th chip, added after an earlier fix that hard-
+  // tuned sizing for exactly 3 chips, is what overflowed this row.
+  const attnChips = await page.evaluate(() => Array.from(document.querySelectorAll('#hrAttnStatusChips .wf-rem-chip')).map((b) => b.dataset.status));
+  check('Attendance Requests: exactly the 3 real status chips remain (In progress / Completed / HR to decide) - "All" is gone', JSON.stringify(attnChips) === JSON.stringify(['in_progress', 'completed', 'unconfirmed_hr_decide']), 'got: ' + JSON.stringify(attnChips));
+  const attnOverflow = await page.evaluate(() => {
+    const chipsBox = document.getElementById('hrAttnStatusChips').getBoundingClientRect();
+    const firstChipBox = document.querySelector('#hrAttnStatusChips .wf-rem-chip').getBoundingClientRect();
+    return {
+      pageScrollsSideways: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      chipsRowWithinViewport: chipsBox.right <= document.documentElement.clientWidth + 1,
+      firstChipNotClippedOnLeft: firstChipBox.x >= 0
+    };
+  });
+  check('Attendance Requests: the status-chip row fits within the real 384px-wide page, "In progress" is not clipped on the left, and the page never scrolls sideways', !attnOverflow.pageScrollsSideways && attnOverflow.chipsRowWithinViewport && attnOverflow.firstChipNotClippedOnLeft, 'got: ' + JSON.stringify(attnOverflow));
+
   // Live request (2026-11, direct instruction) - every system/automated
   // alert (nightly backup failure, a settings group going empty,
   // Together We Can sync failures) now lands under the SAME "Automations"

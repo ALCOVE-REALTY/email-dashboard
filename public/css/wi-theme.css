@@ -2153,8 +2153,19 @@ body { background: var(--wi-bg); }
 /* Task 1 (2026-11) LIVE BUG FIX: "In progress" (the longest of this
    page's 3 chip labels) wrapped onto two lines at Galaxy-S23 width -
    white-space:nowrap above stops the wrap, this tightens padding/font/
-   gap just for THIS chip set so all 3 still fit on one line each. */
-#hrAttnStatusChips.wf-rem-chips { gap: 6px; }
+   gap just for THIS chip set so all 3 still fit on one line each.
+   HARDENING (2026-11-25), direct instruction, Part B item 5 - the "All"
+   4th chip was added later without revisiting this fix (removed from
+   the markup entirely - see workforce.html), which is what actually
+   overflowed the row sideways on mobile ("0 in progress" clipped on the
+   left). flex-wrap is added here too, scoped to THIS chip row only
+   (never the shared .wf-rem-chips class - the AI usage page's own chip
+   row above deliberately relies on staying single-line) as a
+   deliberate belt-and-suspenders fix: 3 chips already fit on one line
+   with the padding/font-size above, but a future label change or an
+   unusually narrow device should wrap instead of silently overflowing
+   again. */
+#hrAttnStatusChips.wf-rem-chips { gap: 6px; flex-wrap: wrap; }
 #hrAttnStatusChips .wf-rem-chip { padding: 0 6px; font-size: 11.5px; gap: 4px; }
 /* AI usage page - live bug fix (2026-11): "This year" lives in its own
    row (see hrAiUsageChipsYear's own comment for why - a 4th chip can't
